@@ -1,0 +1,132 @@
+# Geeky Jimmy’s Brainstorming Tool
+
+A private, local-first Markdown workspace for ideas and projects. This is a standalone app and is not part of Accountability Bot.
+
+## Stage 1.1
+
+This first increment includes a Docker-hosted PWA, project sidebar, three-level note hierarchy, Markdown editor and formatting toolbar, local draft storage, automatic server sync, search, light/dark/system themes, one-use device tokens, per-note line-number preferences, per-session note access controls, and a CLI-readable edit audit log.
+
+The UI follows the approved mockup’s full-screen editor, compact branded header, and project tree. Its default theme uses phosphor green on black; the light theme uses black on white with green accents. The PWA uses the Geeky Jimmy app icon in `static/` for the browser, iOS home screen, and installed app.
+
+Formatting stays Markdown-native: `**bold**`, `*italic*`, `__underline__` (Discord style), `~~strike~~`, backticks for inline code, and `==highlight==` for highlighting (a common extension because core Markdown has no highlight syntax).
+
+## Start the app
+
+On the Ubuntu Docker host, in this repository directory:
+
+```sh
+docker compose up -d --build
+```
+
+The container listens on `127.0.0.1:8081` by default (configurable with `HOST_PORT` in `.env`). The named Docker volume `brainstorming_data` stores the SQLite database. The image runs as a non-root user with a read-only root filesystem and no Linux capabilities.
+
+## Private Tailscale access
+
+1. Install and sign in to Tailscale on the Ubuntu host. Enable HTTPS certificates for the tailnet if Tailscale prompts you.
+2. Start private HTTPS forwarding to the loopback-only app:
+
+   ```sh
+   tailscale serve --bg 8081
+   tailscale serve status
+   ```
+
+3. Open the HTTPS `*.ts.net` address reported by Tailscale from a device on the same tailnet. Do not configure Tailscale Funnel or a public reverse proxy for this app.
+4. On a supported browser, install the PWA (on iPhone/iPad: Safari Share → Add to Home Screen).
+
+Tailscale Serve forwards to a local service and provisions HTTPS certificates for tailnet access; its current command and HTTPS requirements are documented by [Tailscale](https://tailscale.com/docs/reference/tailscale-cli/serve) and [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve).
+
+## First connection and one-use tokens
+
+On first open, create the local account name. The token itself is always generated on the Docker host; the web UI never creates or displays one.
+
+Generate one token for each device/client and enter it in that device’s connection screen:
+
+```sh
+docker compose exec brainstorming python server.py token create --name "iPhone"
+```
+
+New sessions start without access to notes. In Settings → Note access by session, check the notes each active session may read and edit. To connect a trusted control device that can manage the matrix, create its token with `--manage-permissions`.
+
+When upgrading an existing database, current note access is preserved. The earliest active session becomes the initial permission manager; other active sessions can be individually restricted in the matrix.
+
+The token is printed once and expires 30 days after creation if unused. Entering it exchanges it for a device session lasting 30 days; the token is immediately marked used and cannot be entered again. Do not share one token between devices. Disconnect a device in Settings or sign out to revoke its session. Reconnecting requires a fresh CLI-generated token.
+
+CLI token commands:
+
+```sh
+docker compose exec brainstorming python server.py token list
+docker compose exec brainstorming python server.py token revoke TOKEN_ID
+```
+
+The app's **Settings → Device sessions** page and the CLI command below list all recorded browser/app sessions, including active, expired, and revoked sessions:
+
+```sh
+docker compose exec brainstorming python server.py session list
+```
+
+## Audit log
+
+Note creation, saved edits, deletion, and session access changes record the account name, timestamp, note title, action, and revision. Read the most recent events from the Docker host:
+
+```sh
+docker compose exec brainstorming python server.py audit list --limit 50
+```
+
+The audit log is stored in the same persistent SQLite database. It is not displayed in the web UI in this increment.
+
+## Manual snapshot
+
+Create a transactionally consistent SQLite snapshot in the data volume:
+
+```sh
+docker compose exec brainstorming python server.py snapshot --output /data/brainstorming-snapshot.sqlite3
+```
+
+Copy it out of the container to your own protected backup location:
+
+```sh
+container_id=$(docker compose ps -q brainstorming)
+docker cp "$container_id:/data/brainstorming-snapshot.sqlite3" ./brainstorming-snapshot.sqlite3
+```
+
+Keep snapshots private. Automated cloud backup and attachment backup/restore are not implemented in Stage 1.1.
+
+## Development and checks
+
+The Python server uses only the standard library. CodeMirror 6 and its Markdown language support are loaded as ES modules from esm.sh on first use; the service worker caches successful module responses for later offline use. A native textarea fallback remains available if the editor modules cannot load.
+
+Run the API and hierarchy tests with:
+
+```sh
+python3 -m unittest discover -s tests -v
+```
+
+The PWA requires HTTPS when accessed from another device; `localhost` is also a secure browser context for local development.
+
+## Data and Git safety
+
+User data lives in the Docker volume and never in this repository. `.gitignore` excludes local data directories, SQLite databases, exports, attachment storage, and credentials. Start from `.env.example` only for non-secret settings; do not commit tokens, Tailscale details, or private notes.
+
+## Current gaps
+
+- Stable `[[note]]` links, tag editing, inline image uploads/previews, and note moving are reserved for a follow-up increment.
+- Audit events are available through the CLI only.
+- The service worker caches the app shell and same-origin files plus CodeMirror module responses; local note drafts are kept in IndexedDB and sync when the server returns. Browser storage may still be cleared by the device OS.
+- No AI integrations, read-aloud, automated backups, or native clients are included.
+- Choose and add the repository licence before publicly publishing; MIT was suggested in the brief, but needs the owner’s approval.
+
+## GitHub
+
+The GitHub target supplied for this project is `https://github.com/shallwood/geeky-jimmy-brainstorming.git`. This mounted workspace blocks writes to `.git`, so Git initialization and setting `origin` could not be completed here. From a normal writable checkout, initialize and publish after choosing the licence:
+
+```sh
+git init -b main
+git add .
+git commit -m "Build Stage 1.1 brainstorming editor"
+git remote add origin https://github.com/shallwood/geeky-jimmy-brainstorming.git
+git push -u origin main
+```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
