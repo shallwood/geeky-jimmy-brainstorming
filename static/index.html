@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="description" content="A quiet, local-first Markdown space for thoughts, notes, and projects.">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/Geeky%20Jimmy%20Brainstorming%20Icon.png" type="image/png">
+  <link rel="apple-touch-icon" href="/Geeky%20Jimmy%20Brainstorming%20Icon.png">
+  <link rel="stylesheet" href="/styles.css?v=terminal-green-23">
+  <title>Geeky Jimmy’s Brainstorming Tool</title>
+</head>
+<body>
+  <div id="authScreen" class="auth-screen" hidden>
+    <section class="auth-card">
+      <div class="brand-mark" aria-hidden="true">&gt;_</div>
+      <p class="eyebrow">YOUR PRIVATE IDEA SPACE</p>
+      <h1>Geeky Jimmy’s<br><span>Brainstorming Tool</span></h1>
+      <p id="authIntro" class="muted">A calm place to catch the thought before it wanders off.</p>
+      <form id="setupForm" hidden>
+        <label>Choose a username<input name="username" autocomplete="username" required minlength="2" maxlength="64"></label>
+        <button class="primary wide" type="submit">Create my account</button>
+      </form>
+      <form id="tokenForm" hidden>
+        <label>One-use connection token<input name="token" autocomplete="off" placeholder="Paste your CLI-generated token" required></label>
+        <button class="primary wide" type="submit">Connect this device</button>
+      </form>
+      <p id="tokenHelp" class="fine-print" hidden>Generate a one-use token in the Docker host CLI with <code>docker compose exec brainstorming python server.py token create --name "iPhone"</code>. It expires after 30 days if unused.</p>
+      <p id="authError" class="error" role="alert"></p>
+    </section>
+  </div>
+
+  <div id="app" class="app-shell" hidden>
+    <header class="titlebar">
+<div id="pullStatus" role="status" hidden><span aria-hidden="true"></span><b>Pull to refresh</b></div>
+      <button id="menuButton" class="icon-button menu-button" aria-label="Open project sidebar">☰</button>
+      <div class="brand-avatar" aria-hidden="true">&gt;_</div>
+      <div class="brand-title"><strong>Geeky Jimmy’s</strong><span>Brainstorming Tool</span></div>
+      <div class="title-spacer"></div>
+      <div class="sync-status" id="syncStatus"><span class="status-dot"></span><span>Ready</span></div>
+      <button id="themeButton" class="icon-button" title="Change theme" aria-label="Change theme">☼</button>
+      <button id="settingsButton" class="icon-button" title="Settings" aria-label="Settings">⚙</button>
+    </header>
+    <div class="workspace">
+      <div id="scrim" class="scrim"></div>
+      <aside id="sidebar" class="sidebar" aria-label="Projects and notes">
+        <div class="sidebar-heading"><div><span class="eyebrow">YOUR SPACE</span><h2>Projects</h2></div><button id="refreshProjects" class="icon-button small" title="Refresh projects and notes" aria-label="Refresh projects and notes">↻</button><button id="newProjectButton" class="icon-button small" title="New project" aria-label="New project">＋</button></div>
+        <label class="search-box"><span>⌕</span><input id="searchInput" placeholder="Search notes…" aria-label="Search notes"></label>
+        <div id="searchResults" class="search-results" hidden></div>
+        <nav id="projectTree" class="project-tree"></nav>
+        <div class="sidebar-bottom"><button id="importButton" class="sidebar-action">Import file…</button><input id="importFile" type="file" accept=".pdf,.md,.markdown" hidden><button id="sidebarProjectButton" class="sidebar-action">＋ <span>New Project</span></button></div>
+      </aside>
+      <main class="main-pane">
+        <div id="welcome" class="welcome-state">
+          <div class="welcome-sparkle">✦</div>
+          <p class="eyebrow">A PLACE FOR THE THOUGHTS</p>
+          <h1>Catch the idea.<br><span>Give it room.</span></h1>
+          <p>Choose a project, or make one and start with an empty note.</p>
+          <button id="welcomeProjectButton" class="primary">＋ Create a project</button>
+        </div>
+        <section id="editorPane" class="editor-pane" hidden>
+          <div class="breadcrumbs" id="breadcrumbs"></div>
+          <div class="note-heading"><div class="note-heading-icon">✎</div><h1 id="noteTitle" class="note-title"></h1><button type="button" id="readAloud" class="secondary" aria-label="Read aloud" title="Read selected text or start at the cursor"><span class="speech-label">Read aloud</span><svg class="mobile-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M3 9h4l5-4v14l-5-4H3z M16 8q4 4 0 8 M19 5q7 7 0 14"/></svg></button>
+          <div id="speechControls" role="group" aria-label="Read aloud playback" hidden>
+            <button type="button" id="speechBack" aria-label="Previous passage">◀ Back</button>
+            <button type="button" id="speechPause">Pause</button>
+            <button type="button" id="speechNext" aria-label="Next passage">Next ▶</button>
+            <button type="button" id="speechStop">Stop</button>
+          </div>
+          <span id="noteSaved" class="saved-label" role="status" title="Saved"><span class="save-text">Saved</span><svg class="mobile-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M3 3h14l4 4v14H3z M7 3v6h9V3 M7 21v-8h10v8"/><g class="save-cross"><circle cx="18" cy="7" r="6"/><path d="m15 4 6 6m0-6-6 6"/></g></svg></span></div>
+          <div class="format-toolbar" role="toolbar" aria-label="Markdown formatting">
+            <button data-action="undo" aria-label="Undo">↶</button><button data-action="redo" aria-label="Redo">↷</button><span class="tool-separator"></span>
+            <button data-action="heading" aria-label="Heading">H</button><button data-action="bold" aria-label="Bold"><b>B</b></button><button data-action="italic" aria-label="Italic"><i>I</i></button><button data-action="underline" aria-label="Underline"><u>U</u></button><button data-action="strike" aria-label="Strikethrough"><s>S</s></button><button data-action="highlight" aria-label="Highlight">▰</button><span class="tool-separator"></span>
+            <button data-action="bullet" aria-label="Bulleted list">☷</button><button data-action="number" aria-label="Numbered list">1.</button><button data-action="quote" aria-label="Quote">❞</button><button data-action="code" aria-label="Inline code">&lt;/&gt;</button><button data-action="link" aria-label="Link">↗</button>
+            <span class="toolbar-spacer"></span><button id="lineNumbersButton" class="line-number-toggle" type="button" aria-pressed="true" aria-label="Hide line numbers for this note">#</button><span class="markdown-label">Markdown</span>
+          </div>
+          <span id="toolbarTooltip" aria-hidden="true" hidden></span>
+          <div class="note-scroll-area">
+            <div class="editor-wrap"><div id="editor" aria-label="Markdown editor"></div><textarea id="editorFallback" aria-label="Markdown editor" spellcheck="true" hidden></textarea></div></div>
+          <footer class="editor-footer"><span id="wordCount">0 words</span><span id="saveMessage">Changes save as you type</span><button id="addNoteButton" class="footer-add">＋ Add note</button></footer>
+        </section>
+        <section id="settingsPane" class="settings-pane" hidden>
+          <div class="settings-header"><p class="eyebrow">PREFERENCES</p><h1>Settings</h1><p class="muted">A few controls for your little corner of the internet.</p></div>
+          <div class="settings-card"><h2>Appearance</h2><p>Choose the light that feels right.</p><div class="theme-options"><button data-theme="light">☀ Light</button><button data-theme="dark">☾ Dark</button><button data-theme="system">◐ System</button></div></div>
+          <div class="settings-card"><h2>Read aloud</h2>
+            <p id="onlineVoiceInfo" hidden>Choosing an online voice sends the passage you read to its speech provider.</p>
+            <label>Voice <select id="speechVoice" style="max-width:100%"></select></label>
+            <button type="button" id="previewVoice" class="secondary">Preview voice</button>
+          </div>
+          <div id="deviceSessionsCard" class="settings-card"><h2>Device sessions</h2><p>All recorded sessions appear here, including expired and revoked sessions. Disconnect an active device here; reconnecting requires a fresh CLI token.</p><div id="sessionList" class="token-list"></div><p class="fine-print">Generate a one-use token on the Docker host with <code>docker compose exec brainstorming python server.py token create --name "Claude"</code>. New sessions start with no note access. To create a trusted control session, add <code>--manage-permissions</code>.</p></div>
+          <div id="archiveCard" class="settings-card" hidden><h2>Archived items</h2><div id="archiveList"></div></div>
+          <div id="accessMatrixCard" class="settings-card" hidden><h2>Note access by session</h2><p>Check each note a session may read and edit. New sessions start with no note access.</p><div id="accessMatrix"></div></div>
+          <div class="settings-card future-card"><h2>Future features</h2><p>AI connections and automated backups are planned for later stages.</p></div>
+          <button id="signOutButton" class="secondary">Sign out of this device</button>
+        </section>
+      </main>
+    </div>
+    <dialog id="organizer" class="dialog" aria-labelledby="organizerTitle">
+      <h2 id="organizerTitle"></h2>
+      <label>Title <input id="organizerName" maxlength="160"></label>
+      <button type="button" id="renameItem" class="secondary">Rename</button>
+      <div id="moveFields"><label>Move under <select id="moveDestination"></select></label>
+        <button type="button" id="moveItem" class="secondary">Move note</button></div>
+      <p id="organizerError" class="error" role="alert"></p>
+      <div class="dialog-actions"><button type="button" id="archiveItem" class="secondary">Archive…</button>
+        <button type="button" id="closeOrganizer" class="secondary">Close</button></div>
+    </dialog>
+    <div id="titleDialog" class="modal-backdrop" hidden>
+      <form id="titleForm" class="dialog" role="dialog" aria-modal="true" aria-labelledby="titleDialogHeading">
+        <p id="dialogEyebrow" class="eyebrow">NEW NOTE</p><h2 id="titleDialogHeading">Give this note a title</h2>
+        <label class="title-input-label"><span class="sr-only">Title</span><input id="newTitleInput" name="title" maxlength="160" required placeholder="A thought worth keeping"></label>
+        <p id="dialogContext" class="muted"></p><p id="dialogError" class="error"></p>
+        <div class="dialog-actions"><button type="button" id="cancelTitle" class="secondary">Cancel</button><button type="submit" class="primary">Create and open</button></div>
+      </form>
+    </div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </div>
+  <script type="module" src="/app.js?v=terminal-green-26"></script>
+</body>
+</html>

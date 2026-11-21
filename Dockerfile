@@ -1,0 +1,11 @@
+FROM python:3.13-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils util-linux && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY server.py ./server.py
+COPY static ./static
+RUN addgroup --system app && adduser --system --ingroup app app \
+    && mkdir -p /data && chown app:app /data
+USER app
+EXPOSE 8080
+CMD ["python", "server.py"]

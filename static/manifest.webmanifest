@@ -1,0 +1,14 @@
+{
+  "name": "Geeky Jimmy’s Brainstorming Tool",
+  "short_name": "Brainstorming",
+  "description": "A quiet, local-first Markdown space for thoughts and projects.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "icons": [
+    {"src":"/Geeky%20Jimmy%20Brainstorming%20Icon.png","sizes":"1254x1254","type":"image/png","purpose":"any"}
+  ]
+}

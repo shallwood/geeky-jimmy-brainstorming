@@ -1,0 +1,13 @@
+.git
+.env
+.env.*
+!.env.example
+data
+notes
+attachments
+exports
+*.sqlite3
+__pycache__
+tests
+README.md
+CONTRIBUTING.md
