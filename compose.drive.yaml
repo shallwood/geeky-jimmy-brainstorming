@@ -1,0 +1,8 @@
+services:
+  brainstorming:
+    volumes:
+      - type: bind
+        source: /mnt/gdrive
+        target: /backups
+        bind:
+          create_host_path: false

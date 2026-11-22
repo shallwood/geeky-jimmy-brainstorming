@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import drive_backup
+import threading
 import hashlib
 import argparse
 import json
@@ -116,6 +118,8 @@ def init_db() -> None:
             db.execute("ALTER TABLE change_events ADD COLUMN subject_title TEXT")
         if "archived" not in {r["name"] for r in db.execute("PRAGMA table_info(projects)")}:
             db.execute("ALTER TABLE projects ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+        if "can_backup" not in {r["name"] for r in db.execute("PRAGMA table_info(web_sessions)")}:
+            db.execute("ALTER TABLE web_sessions ADD COLUMN can_backup INTEGER NOT NULL DEFAULT 0")
         token_columns = {row["name"] for row in db.execute("PRAGMA table_info(api_tokens)")}
         if "can_manage_permissions" not in token_columns:
             db.execute("ALTER TABLE api_tokens ADD COLUMN can_manage_permissions INTEGER NOT NULL DEFAULT 0")
@@ -386,9 +390,10 @@ class Handler(BaseHTTPRequestHandler):
         token = self.headers.get("Authorization", "").removeprefix("Bearer ")
         digest = hashlib.sha256(token.encode()).hexdigest()
         with connect() as db:
-            session = db.execute("SELECT id,user_id,can_manage_permissions FROM web_sessions WHERE token_hash=? AND revoked_at IS NULL AND expires_at>?", (digest, stamp())).fetchone()
+            session = db.execute("SELECT id,user_id,can_manage_permissions,can_backup FROM web_sessions WHERE token_hash=? AND revoked_at IS NULL AND expires_at>?", (digest, stamp())).fetchone()
             if session:
                 db.execute("UPDATE web_sessions SET last_used_at=? WHERE id=?", (stamp(), session["id"]))
+                self.can_backup = bool(session["can_backup"])
                 self.session_id = session["id"]
                 self.session_user_id = session["user_id"]
                 self.can_manage_permissions = bool(session["can_manage_permissions"])
@@ -411,6 +416,69 @@ class Handler(BaseHTTPRequestHandler):
             return True
         self.send_json(403, {"error":"This client cannot manage note permissions"})
         return False
+
+    def note_picture(self, note_id, picture_id=None):
+        if not self.has_note_access(note_id):
+            self.send_json(404, {"error": "Note not found"})
+            return
+        try:
+            if not drive_backup.mounted():
+                self.send_json(503, {"error": "The Google Drive picture folder is offline"})
+                return
+            folder = drive_backup.TARGET / "Note pictures"
+            if picture_id:
+                with connect() as db:
+                    row = db.execute(
+                        "SELECT storage_key,mime_type FROM attachments JOIN note_attachments "
+                        "ON attachments.id=attachment_id WHERE note_id=? AND attachment_id=?",
+                        (note_id, picture_id)).fetchone()
+                if not row:
+                    raise FileNotFoundError()
+                picture = (folder / row["storage_key"]).read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", row["mime_type"])
+                self.send_header("Content-Length", str(len(picture)))
+                self.send_header("Cache-Control", "private, no-store")
+                self.add_security_headers()
+                self.end_headers()
+                self.wfile.write(picture)
+                return
+            size = int(self.headers.get("Content-Length", "0"))
+            if not 0 < size <= 8 * 1024 * 1024:
+                self.send_json(413, {"error": "Choose a picture smaller than 8 MiB after resizing"})
+                return
+            picture = self.rfile.read(size)
+            if len(picture) != size:
+                raise ValueError("Incomplete picture upload")
+            if picture.startswith(b"RIFF") and picture[8:12] == b"WEBP":
+                ext = "webp"
+            elif picture.startswith(b"\x89PNG\r\n\x1a\n"):
+                ext = "png"
+            else:
+                raise ValueError("Unsupported picture format")
+            folder.mkdir(exist_ok=True)
+            digest = hashlib.sha256(picture).hexdigest()
+            key = digest + "." + ext
+            # Identical uploads share a file. Publish only completely written images.
+            if not (folder / key).is_file():
+                with tempfile.NamedTemporaryFile(dir=folder, delete=False) as out:
+                    temp = Path(out.name)
+                try:
+                    temp.write_bytes(picture)
+                    os.replace(temp, folder / key)
+                finally:
+                    temp.unlink(missing_ok=True)
+            with connect() as db:
+                db.execute("INSERT OR IGNORE INTO attachments VALUES(?,?,?,?,?,?,?)",
+                           (secrets.token_hex(16), key, key, "image/" + ext, size, digest, stamp()))
+                picture_id = db.execute("SELECT id FROM attachments WHERE storage_key=?", (key,)).fetchone()[0]
+                db.execute("INSERT OR IGNORE INTO note_attachments(note_id,attachment_id) VALUES(?,?)",
+                           (note_id, picture_id))
+            self.send_json(201, {"id": picture_id})
+        except FileNotFoundError:
+            self.send_json(404, {"error": "Picture unavailable"})
+        except OSError:
+            self.send_json(503, {"error": "Could not access the Google Drive picture folder"})
 
     def actor_id(self) -> str | None:
         digest = hashlib.sha256(self.headers.get("Authorization", "").removeprefix("Bearer ").encode()).hexdigest()
@@ -439,7 +507,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(401, {"error":"Sign in to continue"}); return
             if not self.require_permission_manager(): return
             with connect() as db:
-                rows = db.execute("SELECT id,client_name,created_at,expires_at,last_used_at,revoked_at,can_manage_permissions FROM web_sessions ORDER BY created_at DESC").fetchall()
+                rows = db.execute("SELECT id,client_name,created_at,expires_at,last_used_at,revoked_at,can_manage_permissions,can_backup FROM web_sessions ORDER BY created_at DESC").fetchall()
             self.send_json(200, [row_dict(r) for r in rows]); return
         if path == "/api/access-matrix":
             if not self.is_authorized():
@@ -464,6 +532,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200,{"sessions":sessions,"projects":projects}); return
         if path.startswith("/api/") and not self.is_authorized():
             self.send_json(401, {"error": "Sign in to continue"})
+            return
+        picture = re.fullmatch(r"/api/notes/([a-f0-9]{32})/pictures/([a-f0-9]{32})", path)
+        if picture:
+            self.note_picture(*picture.groups())
+            return
+        if path == "/api/backups":
+            self.send_json(200, {"allowed":self.can_backup, **(drive_backup.status() if self.can_backup else {})})
             return
         if path == "/api/archive":
             with connect() as db:
@@ -565,12 +640,31 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(401, {"error": "Sign in to continue"})
             return
         try:
+            upload = re.fullmatch(r"/api/notes/([a-f0-9]{32})/pictures", path)
+            if upload:
+                self.note_picture(upload[1])
+                return
             importing = path == "/api/notes/import"
             if importing:
                 params = parse_qs(urlparse(self.path).query)
                 data = {key: values[0] for key, values in params.items() if key in ("project_id", "title")}
             else:
                 data = self.body_json()
+            if path == "/api/backup-permission":
+                if not self.require_permission_manager(): return
+                allowed = data.get("allowed")
+                if not isinstance(allowed,bool):
+                    raise ValueError("Choose a backup permission")
+                with connect() as db:
+                    cur = db.execute("UPDATE web_sessions SET can_backup=? WHERE id=? AND revoked_at IS NULL AND expires_at>?",
+                                     (int(allowed),data.get("id"),stamp()))
+                    if not cur.rowcount:
+                        raise ValueError("Choose an active session")
+                self.send_json(200, {"saved":True}); return
+            if path == "/api/backups":
+                if not self.can_backup:
+                    self.send_json(403, {"error":"Full backup permission required"}); return
+                self.send_json(200, drive_backup.action(self.session_id,data)); return
             if path == "/api/organize":
                 with connect() as db:
                     organize_item(db, data, self.session_user_id, None if self.can_manage_permissions else self.session_id)
@@ -723,6 +817,10 @@ def clean_title(value: object) -> str:
     return title
 
 
+def local_timestamp(value: str) -> str:
+    return datetime.fromisoformat(value).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
 def create_token(name: str, can_manage_permissions: bool = False) -> None:
     with connect() as db:
         user = db.execute("SELECT id,username FROM users ORDER BY created_at LIMIT 1").fetchone()
@@ -738,7 +836,7 @@ def create_token(name: str, can_manage_permissions: bool = False) -> None:
                    (token_id,user["id"],name,hashlib.sha256(token.encode()).hexdigest(),now,expires,int(can_manage_permissions)))
     print("Connection token (shown once):")
     print(token)
-    print(f"Expires: {expires}")
+    print(f"Expires: {local_timestamp(expires)}")
     print("Permission manager: " + ("yes" if can_manage_permissions else "no"))
     print("Paste this token into the web app's connection screen. Keep it private.")
 
@@ -775,7 +873,7 @@ def main() -> None:
                 print("No active connection tokens.")
             for row in rows:
                 role = "  permission-manager" if row["can_manage_permissions"] else ""
-                print(f"{row['id']}  {row['name']}{role}  expires {row['expires_at']}")
+                print(f"{row['id']}  {row['name']}{role}  expires {local_timestamp(row['expires_at'])}")
         elif args.token_action == "revoke":
             with connect() as db:
                 cur = db.execute("UPDATE api_tokens SET revoked_at=? WHERE id=? AND used_at IS NULL AND revoked_at IS NULL", (stamp(),args.token_id))
@@ -792,10 +890,10 @@ def main() -> None:
         now = stamp()
         for row in rows:
             status = "revoked" if row["revoked_at"] else "expired" if row["expires_at"] <= now else "active"
-            last_used = row["last_used_at"] or "never"
-            revoked = f"  revoked {row['revoked_at']}" if row["revoked_at"] else ""
+            last_used = local_timestamp(row["last_used_at"]) if row["last_used_at"] else "never"
+            revoked = f"  revoked {local_timestamp(row['revoked_at'])}" if row["revoked_at"] else ""
             role = "  permission-manager" if row["can_manage_permissions"] else ""
-            print(f"{row['client_name']}  {status}{role}  connected {row['created_at']}  last used {last_used}  expires {row['expires_at']}{revoked}")
+            print(f"{row['client_name']}  {status}{role}  connected {local_timestamp(row['created_at'])}  last used {last_used}  expires {local_timestamp(row['expires_at'])}{revoked}")
         return
     if args.command == "audit":
         limit = max(1,min(args.limit,2000))
@@ -809,7 +907,7 @@ def main() -> None:
         if not rows:
             print("No recorded note changes.")
         for row in rows:
-            print(f"{row['occurred_at']}  {row['actor']}  {row['action']:<7}  {row['subject_title'] or 'Untitled'}  rev {row['revision'] or '-'}")
+            print(f"{local_timestamp(row['occurred_at'])}  {row['actor']}  {row['action']:<7}  {row['subject_title'] or 'Untitled'}  rev {row['revision'] or '-'}")
         return
     if args.command == "snapshot":
         destination = Path(args.output)
@@ -826,6 +924,7 @@ def main() -> None:
         print(f"Consistent SQLite snapshot created: {destination}")
         return
     port = int(os.environ.get("PORT", "8080"))
+    threading.Thread(target=drive_backup.scheduler,daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
 

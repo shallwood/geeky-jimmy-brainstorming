@@ -64,6 +64,12 @@ The app's **Settings → Device sessions** page and the CLI command below list a
 docker compose exec brainstorming python server.py session list
 ```
 
+## Pictures in notes
+
+Choose **Insert picture** at the cursor, paste a picture, or drop one into the editor. Tap its picture icon to open the screen-sized preview. The browser stores a resized still image (up to 2048 pixels on the longest edge) in the mounted Drive folder under `Note pictures`. Identical uploads reuse the same picture. Viewing requires access to the original note and a working Drive mount. Drive users with direct folder access can open the picture files.
+
+The encrypted backup contains the note text and attachment references. Keep the Drive picture folder alongside the backups when restoring or migrating. Removing a marker leaves its file available for older backups.
+
 ## Audit log
 
 Note creation, saved edits, deletion, and session access changes record the account name, timestamp, note title, action, and revision. Read the most recent events from the Docker host:
@@ -89,7 +95,7 @@ container_id=$(docker compose ps -q brainstorming)
 docker cp "$container_id:/data/brainstorming-snapshot.sqlite3" ./brainstorming-snapshot.sqlite3
 ```
 
-Keep snapshots private. Automated cloud backup and attachment backup/restore are not implemented in Stage 1.1.
+For encrypted Google Drive backups, scheduling, and recovery, see [Backups](BACKUPS.md).
 
 ## Development and checks
 
@@ -109,10 +115,10 @@ User data lives in the Docker volume and never in this repository. `.gitignore` 
 
 ## Current gaps
 
-- Stable `[[note]]` links, tag editing, inline image uploads/previews, and note moving are reserved for a follow-up increment.
+- Stable `[[note]]` links and tag editing are reserved for a follow-up increment.
 - Audit events are available through the CLI only.
 - The service worker caches the app shell and same-origin files plus CodeMirror module responses; local note drafts are kept in IndexedDB and sync when the server returns. Browser storage may still be cleared by the device OS.
-- No AI integrations, read-aloud, automated backups, or native clients are included.
+- AI integrations and native clients are pending.
 - Choose and add the repository licence before publicly publishing; MIT was suggested in the brief, but needs the owner’s approval.
 
 ## GitHub

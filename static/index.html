@@ -8,7 +8,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/Geeky%20Jimmy%20Brainstorming%20Icon.png" type="image/png">
   <link rel="apple-touch-icon" href="/Geeky%20Jimmy%20Brainstorming%20Icon.png">
-  <link rel="stylesheet" href="/styles.css?v=terminal-green-23">
+  <link rel="stylesheet" href="/styles.css?v=terminal-green-24">
   <title>Geeky Jimmy’s Brainstorming Tool</title>
 </head>
 <body>
@@ -73,11 +73,11 @@
             <button data-action="undo" aria-label="Undo">↶</button><button data-action="redo" aria-label="Redo">↷</button><span class="tool-separator"></span>
             <button data-action="heading" aria-label="Heading">H</button><button data-action="bold" aria-label="Bold"><b>B</b></button><button data-action="italic" aria-label="Italic"><i>I</i></button><button data-action="underline" aria-label="Underline"><u>U</u></button><button data-action="strike" aria-label="Strikethrough"><s>S</s></button><button data-action="highlight" aria-label="Highlight">▰</button><span class="tool-separator"></span>
             <button data-action="bullet" aria-label="Bulleted list">☷</button><button data-action="number" aria-label="Numbered list">1.</button><button data-action="quote" aria-label="Quote">❞</button><button data-action="code" aria-label="Inline code">&lt;/&gt;</button><button data-action="link" aria-label="Link">↗</button>
-            <span class="toolbar-spacer"></span><button id="lineNumbersButton" class="line-number-toggle" type="button" aria-pressed="true" aria-label="Hide line numbers for this note">#</button><span class="markdown-label">Markdown</span>
+            <button data-action="picture" aria-label="Insert picture">▧</button><input id="pictureFile" type="file" accept="image/*" hidden><span class="toolbar-spacer"></span><button id="lineNumbersButton" class="line-number-toggle" type="button" aria-pressed="true" aria-label="Hide line numbers for this note">#</button><span class="markdown-label">Markdown</span>
           </div>
           <span id="toolbarTooltip" aria-hidden="true" hidden></span>
           <div class="note-scroll-area">
-            <div class="editor-wrap"><div id="editor" aria-label="Markdown editor"></div><textarea id="editorFallback" aria-label="Markdown editor" spellcheck="true" hidden></textarea></div></div>
+            <div class="editor-wrap"><div id="editor" aria-label="Markdown editor"></div><textarea id="editorFallback" aria-label="Markdown editor" spellcheck="true" hidden></textarea><div id="fallbackPictures"></div></div></div>
           <footer class="editor-footer"><span id="wordCount">0 words</span><span id="saveMessage">Changes save as you type</span><button id="addNoteButton" class="footer-add">＋ Add note</button></footer>
         </section>
         <section id="settingsPane" class="settings-pane" hidden>
@@ -91,11 +91,18 @@
           <div id="deviceSessionsCard" class="settings-card"><h2>Device sessions</h2><p>All recorded sessions appear here, including expired and revoked sessions. Disconnect an active device here; reconnecting requires a fresh CLI token.</p><div id="sessionList" class="token-list"></div><p class="fine-print">Generate a one-use token on the Docker host with <code>docker compose exec brainstorming python server.py token create --name "Claude"</code>. New sessions start with no note access. To create a trusted control session, add <code>--manage-permissions</code>.</p></div>
           <div id="archiveCard" class="settings-card" hidden><h2>Archived items</h2><div id="archiveList"></div></div>
           <div id="accessMatrixCard" class="settings-card" hidden><h2>Note access by session</h2><p>Check each note a session may read and edit. New sessions start with no note access.</p><div id="accessMatrix"></div></div>
-          <div class="settings-card future-card"><h2>Future features</h2><p>AI connections and automated backups are planned for later stages.</p></div>
+          <section class="settings-card" id="backupCard" hidden><h2>Google Drive backups</h2>
+            <p>Includes every synced note, archived items, and the full database.</p>
+            <p id="backupStatus" role="status"></p>
+            <button id="backupNow" class="secondary">Back up now</button>
+            <label>Schedule <select id="backupInterval"><option value="0">Manual only</option><option value="24">Every 24 hours</option><option value="168">Every 7 days</option></select></label>
+            </section>
           <button id="signOutButton" class="secondary">Sign out of this device</button>
         </section>
       </main>
     </div>
+    <dialog id="pictureDialog" aria-label="Note picture"><form method="dialog"><button aria-label="Close picture">Close</button></form><p role="status"></p><img alt="Note picture" hidden></dialog>
+    <dialog id="pictureUpload" aria-label="Uploading picture"><p role="status">Adding picture…</p></dialog>
     <dialog id="organizer" class="dialog" aria-labelledby="organizerTitle">
       <h2 id="organizerTitle"></h2>
       <label>Title <input id="organizerName" maxlength="160"></label>
@@ -116,6 +123,6 @@
     </div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
   </div>
-  <script type="module" src="/app.js?v=terminal-green-26"></script>
+  <script type="module" src="/app.js?v=terminal-green-29"></script>
 </body>
 </html>

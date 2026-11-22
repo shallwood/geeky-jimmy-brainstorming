@@ -1273,3 +1273,10 @@ button:disabled {
 
 .tree-action-row > button { -webkit-touch-callout:none; user-select:none; -webkit-user-select:none }
 h1.note-title { margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+
+.picture-marker { display:inline-flex; align-items:center; justify-content:center; min-width:2em; padding:0 .3em; color:inherit; font:inherit; cursor:pointer; vertical-align:baseline; }
+#pictureDialog { box-sizing:border-box; max-width:96vw; max-height:94dvh; padding:.75rem; background:var(--panel,#131813); color:var(--text,#ddffdd); }
+#pictureDialog form { text-align:right; }
+#pictureDialog p:empty { display:none; }
+#pictureDialog img { max-width:calc(96vw - 2rem); max-height:calc(94dvh - 4rem); object-fit:contain; }
+#pictureDialog::backdrop { background:#000b; }

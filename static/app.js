@@ -1,4 +1,4 @@
-let EditorView, ViewPlugin, Decoration, basicSetup, markdown, undo, redo;
+let EditorView, ViewPlugin, Decoration, WidgetType, basicSetup, markdown, undo, redo;
 try {
   const modules = await Promise.all([
     import("https://esm.sh/codemirror@6.0.1"),
@@ -7,7 +7,7 @@ try {
     import("https://esm.sh/@codemirror/view@6")
   ]);
   ({EditorView,basicSetup}=modules[0]); ({markdown}=modules[1]); ({undo,redo}=modules[2]);
-  ({Decoration,ViewPlugin}=modules[3]);
+  ({Decoration,ViewPlugin,WidgetType}=modules[3]);
 } catch { /* Use the native textarea until the maintained editor bundle is available. */ }
 
 const $ = (selector) => document.querySelector(selector);
@@ -18,6 +18,122 @@ if (!localStorage.getItem("gj-theme-palette-version")) {
 }
 const state = { projects: [], selectedProject: null, selectedNote: null, note: null, editor: null, saveTimer: null, theme: localStorage.getItem("gj-theme") || "dark", dialogKind: "note", dialogParent: null, busy: false, canManagePermissions: false };
 const AUTH_KEY = "gj-session";
+
+const picturePattern = /!\[Picture\]\(picture:([a-f0-9]{32})\)/g;
+function pictureButton(id) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "picture-marker";
+  button.textContent = "▧";
+  button.setAttribute("aria-label", "Open picture");
+  button.title = "Open picture";
+  button.onclick = () => openPicture(id);
+  return button;
+}
+
+const PictureWidget = WidgetType && class extends WidgetType {
+  constructor(id) { super(); this.id = id; }
+  eq(other) { return this.id === other.id; }
+  toDOM() { return pictureButton(this.id); }
+};
+
+function fallbackPictures(text) {
+  $("#fallbackPictures").replaceChildren(...Array.from(text.matchAll(picturePattern),
+    match => pictureButton(match[1])));
+}
+
+async function openPicture(id) {
+  const dialog = $("#pictureDialog");
+  const img = dialog.querySelector("img");
+  const status = dialog.querySelector("p");
+  const request = new AbortController();
+  status.textContent = "Loading picture…";
+  img.hidden = true;
+  dialog.addEventListener("close", () => {
+    request.abort();
+    URL.revokeObjectURL(img.src);
+    img.removeAttribute("src");
+  }, { once: true });
+  dialog.showModal();
+  try {
+    const response = await fetch('/api/notes/' + state.note.id + '/pictures/' + id, {
+      headers: { Authorization: "Bearer " + token() }, signal: request.signal
+    });
+    if (!response.ok) throw new Error("Picture unavailable. Check note access and the Drive connection.");
+    const blob = await response.blob();
+    if (request.signal.aborted) return;
+    img.src = URL.createObjectURL(blob);
+    await img.decode();
+    if (!request.signal.aborted) { img.hidden = false; status.textContent = ""; }
+  } catch (error) {
+    if (!request.signal.aborted) status.textContent = error.message;
+  }
+}
+
+async function scaledPicture(file) {
+  const image = new Image();
+  const url = URL.createObjectURL(file);
+  try {
+    image.src = url;
+    await image.decode();
+    const scale = Math.min(1, 2048 / Math.max(image.naturalWidth, image.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/webp", 0.82));
+    if (!blob || blob.size > 8 * 1024 * 1024) throw new Error("Please choose a smaller picture.");
+    return blob;
+  } finally { URL.revokeObjectURL(url); }
+}
+
+async function insertPicture(file, pos) {
+  const noteId = state.note?.id;
+  if (!file || !noteId || $("#pictureUpload").open) return;
+  const field = $("#editorFallback");
+  const view = state.editor;
+  const from = pos ?? view?.state.selection.main.from ?? field.selectionStart;
+  const to = pos ?? view?.state.selection.main.to ?? field.selectionEnd;
+  $("#pictureUpload").showModal();
+  try {
+    const blob = await scaledPicture(file);
+    const result = await api('/api/notes/' + noteId + '/pictures', {
+      method: "POST", headers: { "Content-Type": blob.type }, body: blob
+    });
+    if (noteId !== state.note?.id) return;
+    const insert = "![Picture](picture:" + result.id + ")";
+    if (view) view.dispatch({changes: {from, to, insert}, selection: {anchor: from + insert.length}});
+    else {
+      field.setRangeText(insert, from, to, "end");
+      field.dispatchEvent(new Event("input"));
+    }
+  } catch (error) { toast(error.message); }
+  finally {
+    $("#pictureUpload").close();
+    if (state.note?.id === noteId) (view || field).focus();
+  }
+}
+$("#pictureUpload").oncancel = event => event.preventDefault();
+$("#pictureFile").onchange = event => {
+  const file = event.target.files[0];
+  event.target.value = "";
+  insertPicture(file);
+};
+const editArea = $(".editor-wrap");
+editArea.addEventListener("paste", event => {
+  const file = Array.from(event.clipboardData.files).find(file => file.type.startsWith("image/"));
+  if (file) { event.preventDefault(); event.stopPropagation(); insertPicture(file); }
+}, true);
+editArea.addEventListener("dragover", event => {
+  if (Array.from(event.dataTransfer.items).some(item => item.type.startsWith("image/"))) event.preventDefault();
+});
+editArea.addEventListener("drop", event => {
+  const file = Array.from(event.dataTransfer.files).find(file => file.type.startsWith("image/"));
+  if (!file) return;
+  event.preventDefault();
+  event.stopPropagation();
+  insertPicture(file, state.editor?.posAtCoords({x: event.clientX, y: event.clientY}));
+}, true);
 
 function markdownEditingDecorations(view) {
   const editorState = view.state;
@@ -40,6 +156,10 @@ function markdownEditingDecorations(view) {
 
   for (let number = 1; number <= editorState.doc.lines; number++) {
     const line = editorState.doc.line(number);
+    for (const match of line.text.matchAll(picturePattern)) {
+      const from = line.from + match.index;
+      decorations.push(Decoration.replace({widget: new PictureWidget(match[1])}).range(from, from + match[0].length));
+    }
     const paired = /(\*\*|~~|==|__|`|\*)(.+?)\1/g;
     let match;
     while ((match = paired.exec(line.text))) {
@@ -68,7 +188,9 @@ const markdownPreview = ViewPlugin?.fromClass(class {
       this.decorations = markdownEditingDecorations(update.view);
     }
   }
-}, { decorations: plugin => plugin.decorations });
+}, { decorations: plugin => plugin.decorations, provide: plugin => EditorView.atomicRanges.of(view => view.plugin(plugin).decorations.update({
+  filter: (_from, _to, decoration) => decoration.spec.widget instanceof PictureWidget
+})) });
 
 function setStatus(message, kind = "ready") {
   const node = $("#syncStatus"); node.className = `sync-status ${kind}`; node.lastElementChild.textContent = message;
@@ -438,6 +560,7 @@ function showEditor(bookmark = null) {
     const fallback = $("#editorFallback");
     fallback.hidden = false;
     fallback.value = draft;
+    fallbackPictures(draft);
     const fit = () => {
       fallback.style.height = "auto";
       fallback.style.height = fallback.scrollHeight + "px";
@@ -446,6 +569,7 @@ function showEditor(bookmark = null) {
     window.onresize = fit;
     fallback.oninput = () => {
       fit();
+      fallbackPictures(fallback.value);
       onBodyChanged(fallback.value);
     };
   }
@@ -743,6 +867,7 @@ function toggleSidebar(open) { $("#sidebar").classList.toggle("open",open); $("#
 function closeSidebar() { toggleSidebar(false); }
 $("#menuButton").onclick=()=>toggleSidebar(true); $("#scrim").onclick=closeSidebar;
 function format(action) {
+  if (action === "picture") { $("#pictureFile").click(); return; }
   if (!state.editor) { const field=$("#editorFallback"); if(field.hidden)return; const from=field.selectionStart,to=field.selectionEnd,selected=field.value.slice(from,to); const wrappers={bold:["**","**"],italic:["*","*"],underline:["__","__"],strike:["~~","~~"],highlight:["==","=="],code:["`","`"]}; if(action==="undo"){document.execCommand("undo");return;}if(action==="redo"){document.execCommand("redo");return;}let lead="",tail="";if(wrappers[action]){[lead,tail]=wrappers[action];}else if(action==="heading")lead="## ";else if(action==="bullet")lead="- ";else if(action==="number")lead="1. ";else if(action==="quote")lead="> ";else if(action==="link"){lead="[";tail="](url)";}else return;const content=selected||"text";field.setRangeText(lead+content+tail,from,to,"select");field.focus();field.setSelectionRange(from+lead.length,from+lead.length+content.length);field.dispatchEvent(new Event("input"));return; }
   const view=state.editor, {from,to}=view.state.selection.main, selected=view.state.sliceDoc(from,to);
   const wrappers={bold:["**","**"],italic:["*","*"],underline:["__","__"],strike:["~~","~~"],highlight:["==","=="],code:["`","`"],quote:["> ",""]};
@@ -784,7 +909,42 @@ $("#themeButton").onclick=()=>{ const next={system:"dark",dark:"light",light:"sy
 matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change",()=>{if(state.theme==="system")applyTheme("system");});
 document.querySelectorAll("[data-theme]").forEach(button=>button.onclick=()=>applyTheme(button.dataset.theme));
 $("#settingsButton").onclick=showSettings;
+const localTimeFormat = new Intl.DateTimeFormat(undefined, {
+  year: "numeric", month: "short", day: "numeric", hour: "numeric",
+  minute: "2-digit", second: "2-digit", timeZoneName: "short",
+});
+function localTimestamp(value) {
+  // Older backups recorded the completion time to the nearest UTC minute.
+  const iso = value.replace(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) UTC$/, "$1T$2:00Z");
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? value : localTimeFormat.format(date);
+}
+let backupPoll;
+async function loadBackups() {
+  clearTimeout(backupPoll);
+  try {
+    const info = await api("/api/backups");
+    $("#backupCard").hidden = !info.allowed;
+    if (!info.allowed) return;
+    $("#backupStatus").textContent = !info.configured ? "Mount the Google Drive backup folder and configure its encryption key on Ubuntu." :
+      ["Drive backup configured.", info.running ? "Backup running…" : "",
+       info.last ? "Last written to Drive mount: " + localTimestamp(info.last) : "", info.error].filter(Boolean).join(" ");
+    $("#backupNow").disabled = !info.configured || info.running;
+    $("#backupInterval").disabled = !info.configured;
+    $("#backupInterval").value = String(info.hours);
+    if (info.running && !$("#settingsPane").hidden) backupPoll = setTimeout(loadBackups, 2000);
+  } catch(error) { toast(error.message); }
+}
+async function driveAction(action, extra = {}) {
+  try {
+    await api("/api/backups",{method:"POST",body:JSON.stringify({action,...extra})});
+    await loadBackups();
+  } catch(error) { toast(error.message); await loadBackups(); }
+}
+$("#backupNow").onclick = () => driveAction("run");
+$("#backupInterval").onchange = event => driveAction("schedule",{hours:Number(event.target.value)});
 async function showSettings() {
+  loadBackups();
   refreshVoicePicker();
   finishReading();
  if(state.note) await saveNow();$("#editorPane").hidden=true;$("#welcome").hidden=true;$("#settingsPane").hidden=false;closeSidebar();$("#deviceSessionsCard").hidden=!state.canManagePermissions;$("#accessMatrixCard").hidden=!state.canManagePermissions;$("#archiveCard").hidden=false;loadArchive();if(state.canManagePermissions){loadSessions();loadAccessMatrix();} }
@@ -794,11 +954,19 @@ async function loadSessions() {
     const list = $("#sessionList");
     list.innerHTML = sessions.length ? sessions.map(session => {
       const status = session.revoked_at ? "Revoked" : Date.parse(session.expires_at) <= Date.now() ? "Expired" : "Active";
-      const lastUsed = session.last_used_at ? new Date(session.last_used_at).toLocaleString() : "Never";
-      const expires = new Date(session.expires_at).toLocaleString();
+      const lastUsed = session.last_used_at ? localTimestamp(session.last_used_at) : "Never";
+      const expires = localTimestamp(session.expires_at);
       const disconnect = status === "Active" ? `<button data-disconnect="${session.id}" class="revoke-button">Disconnect</button>` : "";
-      return `<div class="token-row"><span><b>${escapeHTML(session.client_name)}</b><small>${status}${session.can_manage_permissions?" · Can manage permissions":""} · Last used ${lastUsed} · Expires ${expires}</small></span>${disconnect}</div>`;
+      return `<div class="token-row"><span><b>${escapeHTML(session.client_name)}</b><small>${status}${session.can_manage_permissions?" · Can manage permissions":""} · Last used ${lastUsed} · Expires ${expires}</small></span>${status==="Active" ? `<label><input type="checkbox" data-backup="${session.id}" ${session.can_backup?"checked":""}> Manage full backups</label>` : ""}${disconnect}</div>`;
     }).join("") : "<p class='muted'>No recorded sessions.</p>";
+    list.querySelectorAll("[data-backup]").forEach(box => box.onchange = async () => {
+      box.disabled = true;
+      try {
+        await api("/api/backup-permission",{method:"POST",body:JSON.stringify({id:box.dataset.backup,allowed:box.checked})});
+        await loadBackups();
+      } catch(error) { box.checked = !box.checked; toast(error.message); }
+      finally { box.disabled = false; }
+    });
     list.querySelectorAll("[data-disconnect]").forEach(button => button.onclick = async () => {
       await api(`/api/sessions/${button.dataset.disconnect}`, {method:"DELETE"});
       await loadSessions();
