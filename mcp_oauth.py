@@ -1,4 +1,4 @@
-"""OAuth for the private ChatGPT integration. A grant always belongs to an existing AI session."""
+"""OAuth for the private MCP integration. A grant always belongs to an existing AI session."""
 import base64
 import hashlib
 import html
@@ -14,6 +14,7 @@ if not re.fullmatch(r"https://[a-zA-Z0-9.-]+(?::[0-9]+)?", ISSUER):
     raise ValueError("MCP_PUBLIC_ORIGIN must be a public HTTPS origin")
 RESOURCE = ISSUER + "/mcp"
 CALLBACK = "https://chatgpt.com/connector_platform_oauth_redirect"
+CLAUDE_CALLBACKS = {"https://claude.ai/api/mcp/auth_callback", "https://claude.com/api/mcp/auth_callback"}
 SCOPE = "notes"
 
 SCHEMA = """
@@ -60,7 +61,7 @@ def register(handler, db):
         handler.send_json(400, {"error": "invalid_redirect_uri"})
         return
     redirect = redirects[0]
-    if redirect != CALLBACK and not re.fullmatch(r"https://chatgpt\.com/connector/oauth/[A-Za-z0-9_-]+", redirect):
+    if redirect != CALLBACK and redirect not in CLAUDE_CALLBACKS and not re.fullmatch(r"https://chatgpt\.com/connector/oauth/[A-Za-z0-9_-]+", redirect):
         handler.send_json(400, {"error": "invalid_redirect_uri"})
         return
     if method not in ("client_secret_basic", "client_secret_post", "none"):
@@ -100,16 +101,17 @@ def grant(db, kind, client, session, scope, seconds, challenge=""):
 def authorize(handler, db, p, posted, stamp):
     validate_request(db, p)
     if not posted:
+        client_name = "Claude" if p["redirect_uri"] in CLAUDE_CALLBACKS else "ChatGPT"
         inputs = "".join(f'<input type="hidden" name="{html.escape(k, quote=True)}" value="{html.escape(v, quote=True)}">'
                          for k, v in p.items() if k in {"client_id", "redirect_uri", "response_type", "resource",
                                                         "scope", "state", "code_challenge_method", "code_challenge"})
         raw = f"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>Connect ChatGPT · {TITLE}</title><main><h1>Connect ChatGPT to {TITLE}</h1>
-<p>Enter the existing AI token for the connection you want ChatGPT to use.
-Its note permissions apply. ChatGPT can also create projects and notes.</p>
+<title>Connect {client_name} · {TITLE}</title><main><h1>Connect {client_name} to {TITLE}</h1>
+<p>Enter the existing AI token for the connection you want {client_name} to use.
+Its note permissions apply. {client_name} can also create projects and notes.</p>
 <form method="post" action="/oauth/authorize">{inputs}
 <label>Brainstorming AI token <input type="password" name="ai_token" required autocomplete="off"></label>
-<button>Authorize ChatGPT</button></form></main>""".encode()
+<button>Authorize {client_name}</button></form></main>""".encode()
         handler.send_response(200)
         handler.send_header("Content-Type", "text/html; charset=utf-8")
         handler.send_header("Content-Length", str(len(raw)))
@@ -120,7 +122,7 @@ Its note permissions apply. ChatGPT can also create projects and notes.</p>
         handler.wfile.write(raw)
         return
     if handler.headers.get("Origin") != ISSUER:
-        handler.send_json(403, {"error": "Authorization form origin denied. Reopen the connection from ChatGPT and try again."})
+        handler.send_json(403, {"error": "Authorization form origin denied. Reopen the connection from your MCP client and try again."})
         return
     session = db.execute("SELECT id FROM web_sessions WHERE token_hash=? AND is_ai=1 AND revoked_at IS NULL AND expires_at>?",
                          (digest(p.get("ai_token", "").strip()), stamp())).fetchone()

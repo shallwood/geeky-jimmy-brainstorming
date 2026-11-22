@@ -51,6 +51,12 @@ class ChatGPTConnection(unittest.TestCase):
         return int(status.split()[1]), metadata, json.loads(body) if metadata.get_content_type() == "application/json" else body
 
     def test_chatgpt_link_and_live_matrix(self):
+        self.check_link(oauth.CALLBACK, "ChatGPT")
+
+    def test_claude_link_and_live_matrix(self):
+        self.check_link("https://claude.ai/api/mcp/auth_callback", "Claude")
+
+    def check_link(self, callback, client_name):
         as_json = {"Content-Type": "application/json"}
         status, hdr, _ = self.request("POST", "/mcp", {}, as_json)
         self.assertEqual(status, 401)
@@ -62,16 +68,16 @@ class ChatGPTConnection(unittest.TestCase):
         self.assertEqual(self.request("GET", discovery)[2]["resource"], oauth.RESOURCE)
         self.assertEqual(self.request("GET", "/.well-known/oauth-authorization-server")[2]["issuer"], oauth.ISSUER)
         self.assertEqual(self.request("POST", "/oauth/register", {"redirect_uris": ["https://example.org"]}, as_json)[0], 400)
-        status, _, client = self.request("POST", "/oauth/register", {"redirect_uris": [oauth.CALLBACK]}, as_json)
+        status, _, client = self.request("POST", "/oauth/register", {"redirect_uris": [callback], "token_endpoint_auth_method": "client_secret_post" if client_name == "Claude" else "client_secret_basic"}, as_json)
         self.assertEqual(status, 201)
         verifier = secrets.token_urlsafe(48)
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
-        params = dict(client_id=client["client_id"], redirect_uri=oauth.CALLBACK, response_type="code",
+        params = dict(client_id=client["client_id"], redirect_uri=callback, response_type="code",
                       state="test-state", code_challenge_method="S256", code_challenge=challenge, resource=oauth.RESOURCE)
         status, headers, form = self.request("GET", "/oauth/authorize?" + urlencode(params))
         self.assertEqual(status, 200)
         self.assertEqual(headers.get_all("Referrer-Policy"), ["same-origin"])
-        self.assertIn(b"Authorize ChatGPT", form)
+        self.assertIn(("Authorize " + client_name).encode(), form)
         params["ai_token"] = self.key
         self.assertEqual(self.request("POST", "/oauth/authorize", params)[0], 403)
         for origin in ("null", "https://example.org"):
@@ -83,8 +89,10 @@ class ChatGPTConnection(unittest.TestCase):
         self.assertEqual(result["iss"], [oauth.ISSUER])
         auth = base64.b64encode((client["client_id"] + ":" + client["client_secret"]).encode()).decode()
         headers = {"Authorization": "Basic " + auth}
-        exchange = dict(code=result["code"][0], grant_type="authorization_code", redirect_uri=oauth.CALLBACK)
+        exchange = dict(code=result["code"][0], grant_type="authorization_code", redirect_uri=callback)
         def token(**params):
+            if client_name == "Claude":
+                return self.request("POST", "/oauth/token", dict(params, client_id=client["client_id"], client_secret=client["client_secret"]))
             return self.request("POST", "/oauth/token", params, headers)
         self.assertEqual(token(**exchange, code_verifier="wrong")[0], 400)
         status, _, issued = token(**exchange, code_verifier=verifier)

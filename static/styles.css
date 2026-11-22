@@ -669,6 +669,8 @@ button:disabled {
   margin:15px 0;
   box-shadow:0 4px 18px #00000008
 }
+#deviceSessionsCard > summary { cursor:pointer }
+#deviceSessionsCard > summary h2 { display:inline }
 .settings-card h2 {
   font:700 16px Manrope,sans-serif;
   margin:0 0 5px
@@ -681,8 +683,8 @@ button:disabled {
 }
 .access-matrix-scroll {
   max-width:100%;
-  max-height:min(60vh, 30rem);
-  max-height:min(60dvh, 30rem);
+  max-height:min(calc(100vh - 2rem), 50rem);
+  max-height:min(calc(100dvh - 2rem), 50rem);
   overflow:auto;
   border:1px solid var(--line);
   border-radius:9px

@@ -8,7 +8,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/Geeky%20Jimmy%20Brainstorming%20Icon.png" type="image/png">
   <link rel="apple-touch-icon" href="/Geeky%20Jimmy%20Brainstorming%20Icon.png">
-  <link rel="stylesheet" href="/styles.css?v=terminal-green-25">
+  <link rel="stylesheet" href="/styles.css?v=terminal-green-27">
   <title>Geeky Jimmy’s Brainstorming Tool</title>
 </head>
 <body>
@@ -88,7 +88,7 @@
             <label>Voice <select id="speechVoice" style="max-width:100%"></select></label>
             <button type="button" id="previewVoice" class="secondary">Preview voice</button>
           </div>
-          <div id="deviceSessionsCard" class="settings-card"><h2>Device sessions</h2><p>All recorded sessions appear here, including expired and revoked sessions. Disconnect an active device here; reconnecting requires a fresh CLI token.</p><div id="sessionList" class="token-list"></div><p class="fine-print">Create a named AI connection on the Docker host with <code>docker compose exec brainstorming python server.py token create --ai --name "Claude"</code>. Use its bearer token at <code>/mcp</code> and grant access below.</p></div>
+          <details id="deviceSessionsCard" class="settings-card" hidden><summary><h2>Device sessions</h2></summary><p>All recorded sessions appear here, including expired and revoked sessions. Disconnect an active device here; reconnecting requires a fresh CLI token.</p><div id="sessionList" class="token-list"></div><p class="fine-print">Create a named AI connection on the Docker host with <code>docker compose exec brainstorming python server.py token create --ai --name "Claude"</code>. Use its bearer token at <code>/mcp</code> and grant access below.</p></details>
           <section id="auditWebhookCard" class="settings-card" hidden><h2>Discord audit log</h2>
             <p>Send new audit entries to a Discord channel, including the actor, action, title and revision.</p>
             <form id="auditWebhookForm"><label>Webhook URL <input id="auditWebhookUrl" type="password" autocomplete="off" required></label>
@@ -133,6 +133,6 @@
     </div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
   </div>
-  <script type="module" src="/app.js?v=terminal-green-37"></script>
+  <script type="module" src="/app.js?v=terminal-green-38"></script>
 </body>
 </html>

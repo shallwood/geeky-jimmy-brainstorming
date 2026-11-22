@@ -986,30 +986,43 @@ class Handler(BaseHTTPRequestHandler):
             if not self.require_permission_manager(): return
             try:
                 data = self.body_json()
-                note_id = str(data.get("note_id", ""))
+                note_ids = data.get("note_ids", [data.get("note_id")])
                 session_id = str(data.get("session_id", ""))
                 allowed = data.get("allowed")
-                if not re.fullmatch(r"[a-f0-9]{32}",note_id) or not re.fullmatch(r"[a-f0-9]{32}",session_id):
-                    raise ValueError("Choose a note and session")
-                if not isinstance(allowed,bool):
+                if (not isinstance(note_ids, list) or not note_ids or
+                    not all(isinstance(i, str) and re.fullmatch(r"[a-f0-9]{32}", i) for i in note_ids) or
+                    not re.fullmatch(r"[a-f0-9]{32}", session_id)):
+                    raise ValueError("Choose notes and a session")
+                if not isinstance(allowed, bool):
                     raise ValueError("allowed must be a boolean")
                 now = stamp()
                 with connect() as db:
-                    note = db.execute("SELECT id,title,revision FROM notes WHERE id=? AND status='active'",(note_id,)).fetchone()
+                    db.execute("BEGIN IMMEDIATE")
                     session = db.execute("SELECT id FROM web_sessions WHERE id=? AND revoked_at IS NULL AND expires_at>?",
                                          (session_id,now)).fetchone()
-                    if not note or not session:
-                        self.send_json(404,{"error":"Active note or session not found"}); return
-                    previous = db.execute("SELECT allowed FROM session_note_access WHERE session_id=? AND note_id=?",
-                                          (session_id,note_id)).fetchone()
-                    db.execute("INSERT INTO session_note_access(session_id,note_id,allowed,updated_at) VALUES(?,?,?,?) "
-                               "ON CONFLICT(session_id,note_id) DO UPDATE SET allowed=excluded.allowed,updated_at=excluded.updated_at",
-                               (session_id,note_id,int(allowed),now))
-                    if previous is None or bool(previous["allowed"]) != allowed:
+                    if not session:
+                        self.send_json(404,{"error":"Active session not found"}); return
+                    for note_id in set(note_ids):
+                        note = db.execute("""
+                            SELECT n.title,n.revision,coalesce(a.allowed,0) AS allowed FROM notes n
+                            JOIN projects p ON p.id=n.project_id
+                            LEFT JOIN session_note_access a ON a.note_id=n.id AND a.session_id=?
+                            WHERE n.id=? AND n.status='active' AND p.archived=0
+                        """, (session_id,note_id)).fetchone()
+                        if not note:
+                            raise ValueError("A note is no longer available. Reload the matrix.")
+                        if bool(note["allowed"]) == allowed:
+                            continue
+                        db.execute("INSERT INTO session_note_access(session_id,note_id,allowed,updated_at) VALUES(?,?,?,?) "
+                                   "ON CONFLICT(session_id,note_id) DO UPDATE SET allowed=excluded.allowed,updated_at=excluded.updated_at",
+                                   (session_id,note_id,int(allowed),now))
                         action = "access granted" if allowed else "access denied"
                         db.execute("INSERT INTO change_events(id,actor_type,actor_id,note_id,action,occurred_at,revision,subject_title) VALUES(?,?,?,?,?,?,?,?)",
                                    (secrets.token_hex(16),"user",self.session_user_id,note_id,action,now,note["revision"],note["title"]))
-                self.send_json(200,{"note_id":note_id,"session_id":session_id,"allowed":allowed}); return
+                result = {"session_id":session_id,"allowed":allowed}
+                if "note_ids" not in data:
+                    result["note_id"] = note_ids[0]
+                self.send_json(200,result); return
             except (ValueError,json.JSONDecodeError) as exc:
                 self.send_json(400,{"error":str(exc) or "Invalid request"}); return
         match = re.fullmatch(r"/api/notes/([a-f0-9]{32})", urlparse(self.path).path)

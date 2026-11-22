@@ -1,5 +1,5 @@
-const CACHE = "gj-brainstorming-shell-v53";
-const SHELL = ["/", "/styles.css?v=terminal-green-25", "/app.js?v=terminal-green-37", "/manifest.webmanifest", "/Geeky%20Jimmy%20Brainstorming%20Icon.png"];
+const CACHE = "gj-brainstorming-shell-v56";
+const SHELL = ["/", "/styles.css?v=terminal-green-27", "/app.js?v=terminal-green-38", "/manifest.webmanifest", "/Geeky%20Jimmy%20Brainstorming%20Icon.png"];
 self.addEventListener("install", event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting())));
 self.addEventListener("activate", event => event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== CACHE).map(key => caches.delete(key)))).then(() => self.clients.claim())));
 self.addEventListener("fetch", event => {

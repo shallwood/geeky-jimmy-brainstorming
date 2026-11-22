@@ -61,3 +61,27 @@ Retrospective record entered now for work in the preceding 48 hours. Work dates 
 - Added permission-manager webhook configuration and queued mirroring of new audit entries, including attribution, action and timestamp. Retries, restart recovery and webhook replacement/disconnection behaviour were tested with synthetic data.
 - Historical validation reports include eight backend tests for audit/line-number work and twelve backend tests after the later session/sidebar changes. This documentation task does not rerun or upgrade those checks.
 - Recent app changes were supplied for the owner's Docker Compose rebuild. Live Azure playback and AI access were confirmed in the originating chat, but later sidebar/matrix changes still needed post-rebuild visual verification. A live Discord delivery was not confirmed in the reviewed work.
+
+Added by: Codex | 11/22/2026 | 7:02 AM EST
+
+## Taller note access matrix
+
+Raised the matrix height cap from 30 to 50 rem, allowing roughly eight additional standard rows on taller screens. On shorter screens the matrix fits within the viewport with two rem of clearance. Session headings and note names remain pinned while scrolling.
+
+Added by: Codex | 11/22/2026 | 7:04 AM EST
+
+## Collapsible device sessions
+
+Device sessions starts collapsed in Settings. Select its heading to show or hide the session list and management controls.
+
+Added by: Codex | 11/22/2026 | 7:17 AM EST
+
+## Claude connector
+
+Claude can use automatic OAuth client registration and link an existing Brainstorming AI session. The consent page identifies Claude and note access follows that session’s matrix.
+
+Added by: Codex | 11/22/2026 | 7:32 AM EST
+
+## Select all notes by session
+
+The access matrix can grant or clear access to all listed notes for one session. Unchecking an individual note leaves the others selected and shows a dash in the session's Select all notes checkbox.

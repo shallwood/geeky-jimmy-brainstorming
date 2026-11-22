@@ -1144,13 +1144,14 @@ async function loadAccessMatrix() {
     const host = $("#accessMatrix");
     if (!matrix.sessions.length) { host.innerHTML="<p class='muted'>No active sessions to grant access to.</p>"; return; }
     const header = `<thead><tr><th>Note</th>${matrix.sessions.map(session=>`<th>${escapeHTML(session.client_name)}${session.is_ai ? " · AI" : ""}</th>`).join("")}</tr></thead>`;
+    const selectAll = matrix.sessions.map(session => `<td><input type="checkbox" data-all="${session.id}" aria-label="Select all notes for ${escapeHTML(session.client_name)}"></td>`).join("");
     const defaults = matrix.sessions.map(session => `<td><input type="checkbox" data-default-session="${session.id}" aria-label="Grant ${escapeHTML(session.client_name)} access to new notes" ${session.default_note_access ? "checked" : ""}></td>`).join("");
     const rows = matrix.projects.map(project => {
       const section = `<tr class="access-project"><th colspan="${matrix.sessions.length+1}">${escapeHTML(project.title)}</th></tr>`;
       const notes = project.notes.map(note => `<tr><th>${escapeHTML(note.title||"Untitled note")}</th>${matrix.sessions.map(session=>`<td><input type="checkbox" aria-label="Allow ${escapeHTML(session.client_name)} to access ${escapeHTML(note.title||"Untitled note")}" data-note="${note.id}" data-session="${session.id}" ${note.access[session.id]?"checked":""}></td>`).join("")}</tr>`).join("");
       return section+notes;
     }).join("");
-    host.innerHTML = `<div class="access-matrix-scroll"><table class="access-matrix-table">${header}<tbody><tr><th>Default for new notes</th>${defaults}</tr>${rows}</tbody></table></div>`;
+    host.innerHTML = `<div class="access-matrix-scroll"><table class="access-matrix-table">${header}<tbody><tr><th>Select all notes</th>${selectAll}</tr><tr><th>Default for new notes</th>${defaults}</tr>${rows}</tbody></table></div>`;
     host.querySelectorAll("[data-default-session]").forEach(input => input.onchange = async () => {
       input.disabled = true;
       try {
@@ -1158,21 +1159,48 @@ async function loadAccessMatrix() {
       } catch (error) { input.checked = !input.checked; toast(error.message); }
       finally { input.disabled = false; }
     });
-    host.querySelectorAll("input[data-note][data-session]").forEach(input=>input.addEventListener("change",async()=>{
-      input.disabled=true;
-      try {
-        await api("/api/access-matrix",{method:"PUT",body:JSON.stringify({note_id:input.dataset.note,session_id:input.dataset.session,allowed:input.checked})});
-        if(input.dataset.session===localStorage.getItem("gj-session-id")) {
-          if(state.note?.id===input.dataset.note&&!input.checked) {
-            await deleteDraft(input.dataset.note);
-            clearCurrentNote(input.dataset.note);$("#settingsPane").hidden=false;
-            toast("This session can no longer access that note.");
-          }
-          await loadProjects();
+    for (const all of host.querySelectorAll("[data-all]")) {
+      const session = all.dataset.all;
+      const boxes = [...host.querySelectorAll(`input[data-session="${session}"]`)];
+      function syncColumn() {
+        const count = boxes.filter(box => box.checked).length;
+        all.checked = count > 0 && count === boxes.length;
+        all.indeterminate = count > 0 && count < boxes.length;
+        all.disabled = boxes.length === 0;
+      }
+      async function changeAccess(input) {
+        const allowed = input.checked;
+        const targets = input === all ? boxes : [input];
+        const ids = targets.map(box => box.dataset.note);
+        all.disabled = true;
+        boxes.forEach(box => box.disabled = true);
+        try {
+          await api("/api/access-matrix", {method:"PUT", body:JSON.stringify({session_id:session, note_ids:ids, allowed})});
+        } catch (error) {
+          if (input !== all) input.checked = !allowed;
+          toast(error.message);
+          return;
+        } finally {
+          boxes.forEach(box => box.disabled = false);
+          syncColumn();
         }
-      } catch(error) { input.checked=!input.checked;toast(error.message); }
-      finally { input.disabled=false; }
-    }));
+        targets.forEach(box => box.checked = allowed);
+        syncColumn();
+        if (session === localStorage.getItem("gj-session-id")) {
+          try {
+            if (!allowed && ids.includes(state.note?.id)) {
+              const current = state.note.id;
+              await deleteDraft(current);
+              clearCurrentNote(current);
+              $("#settingsPane").hidden = false;
+            }
+            await loadProjects();
+          } catch (error) { toast(error.message); }
+        }
+      }
+      syncColumn();
+      for (const input of [all, ...boxes]) input.onchange = () => changeAccess(input);
+    }
   } catch(error) { $("#accessMatrix").innerHTML=`<p class="error">${escapeHTML(error.message)}</p>`; }
 }
 $("#signOutButton").onclick=async()=>{try{await api("/api/logout",{method:"POST",body:"{}"});}catch{}localStorage.removeItem(AUTH_KEY);localStorage.removeItem("gj-session-id");showApp(false);$("#authScreen").hidden=false;$("#app").hidden=true;$("#tokenForm").hidden=false;$("#tokenHelp").hidden=false;};
