@@ -681,6 +681,8 @@ button:disabled {
 }
 .access-matrix-scroll {
   max-width:100%;
+  max-height:min(60vh, 30rem);
+  max-height:min(60dvh, 30rem);
   overflow:auto;
   border:1px solid var(--line);
   border-radius:9px
@@ -705,6 +707,10 @@ button:disabled {
   color:var(--ink);
   max-width:130px;
   overflow-wrap:anywhere
+}
+.access-matrix-table thead th:first-child {
+  left:0;
+  z-index:3
 }
 .access-matrix-table th:first-child {
   min-width:150px;

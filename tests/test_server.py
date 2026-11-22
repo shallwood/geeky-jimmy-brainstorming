@@ -64,6 +64,41 @@ class BrainstormingModelTests(unittest.TestCase):
         self.assertIsNotNone(token_row["used_at"])
         self.assertIsNotNone(session_row["revoked_at"])
 
+    def test_browser_reconnect_replace_and_pin(self):
+        def issue(**kwargs):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                server.create_token("Browser", **kwargs)
+            return output.getvalue().splitlines()[1]
+        first = server.redeem_token(issue())
+        sid = first["session_id"]
+        key = issue()
+        self.assertEqual(server.redeem_token(key, first["device"])["confirm_reconnect"], sid)
+        second = server.redeem_token(key, first["device"], sid)
+        self.assertEqual(second["session_id"], sid)
+        self.assertNotEqual(first["session"], second["session"])
+        import hashlib
+        with server.connect() as db:
+            row = db.execute("SELECT token_hash,device_hash FROM web_sessions WHERE id=?", (sid,)).fetchone()
+            self.assertEqual(row[0], hashlib.sha256(second["session"].encode()).hexdigest())
+            self.assertEqual(row[1], hashlib.sha256(second["device"].encode()).hexdigest())
+            server.set_project_pin(db,sid,True,"p"*32,None)
+        with server.connect() as db:
+            with self.assertRaises(server.RevisionConflict):
+                server.set_project_pin(db,sid,True,None,None)
+        with server.connect() as db:
+            db.execute("UPDATE web_sessions SET revoked_at=? WHERE id=?", (server.stamp(),sid))
+        self.assertIsNone(server.redeem_token(issue(),second["device"]))
+        transfer = issue(replacement_id=sid)
+        self.assertEqual(server.redeem_token(transfer)["confirm_reconnect"], sid)
+        third = server.redeem_token(transfer, confirmed_id=sid)
+        self.assertEqual(third["session_id"], sid)
+        self.assertTrue(third["can_manage_permissions"])
+        self.assertIsNone(server.redeem_token(transfer))
+        with server.connect() as db:
+            self.assertEqual(db.execute("SELECT pinned_project FROM web_sessions").fetchall()[0][0],"p"*32)
+            server.set_project_pin(db,sid,True,None,"p"*32)
+
     def test_title_validation(self):
         self.assertEqual(server.clean_title("  Idea  "),"Idea")
         with self.assertRaises(ValueError):

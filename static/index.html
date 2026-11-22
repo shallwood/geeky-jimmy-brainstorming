@@ -8,7 +8,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/Geeky%20Jimmy%20Brainstorming%20Icon.png" type="image/png">
   <link rel="apple-touch-icon" href="/Geeky%20Jimmy%20Brainstorming%20Icon.png">
-  <link rel="stylesheet" href="/styles.css?v=terminal-green-24">
+  <link rel="stylesheet" href="/styles.css?v=terminal-green-25">
   <title>Geeky Jimmy’s Brainstorming Tool</title>
 </head>
 <body>
@@ -88,9 +88,14 @@
             <label>Voice <select id="speechVoice" style="max-width:100%"></select></label>
             <button type="button" id="previewVoice" class="secondary">Preview voice</button>
           </div>
-          <div id="deviceSessionsCard" class="settings-card"><h2>Device sessions</h2><p>All recorded sessions appear here, including expired and revoked sessions. Disconnect an active device here; reconnecting requires a fresh CLI token.</p><div id="sessionList" class="token-list"></div><p class="fine-print">Generate a one-use token on the Docker host with <code>docker compose exec brainstorming python server.py token create --name "Claude"</code>. New sessions start with no note access. To create a trusted control session, add <code>--manage-permissions</code>.</p></div>
+          <div id="deviceSessionsCard" class="settings-card"><h2>Device sessions</h2><p>All recorded sessions appear here, including expired and revoked sessions. Disconnect an active device here; reconnecting requires a fresh CLI token.</p><div id="sessionList" class="token-list"></div><p class="fine-print">Create a named AI connection on the Docker host with <code>docker compose exec brainstorming python server.py token create --ai --name "Claude"</code>. Use its bearer token at <code>/mcp</code> and grant access below.</p></div>
+          <section id="auditWebhookCard" class="settings-card" hidden><h2>Discord audit log</h2>
+            <p>Send new audit entries to a Discord channel, including the actor, action, title and revision.</p>
+            <form id="auditWebhookForm"><label>Webhook URL <input id="auditWebhookUrl" type="password" autocomplete="off" required></label>
+            <button class="secondary">Save webhook</button></form><button id="removeAuditWebhook" class="secondary" hidden>Disconnect webhook</button>
+            <p id="auditWebhookStatus" role="status"></p></section>
           <div id="archiveCard" class="settings-card" hidden><h2>Archived items</h2><div id="archiveList"></div></div>
-          <div id="accessMatrixCard" class="settings-card" hidden><h2>Note access by session</h2><p>Check each note a session may read and edit. New sessions start with no note access.</p><div id="accessMatrix"></div></div>
+          <div id="accessMatrixCard" class="settings-card" hidden><h2>Note access by session</h2><p>The creator always receives access. Check additional sessions in the first row to share future notes and subnotes across all projects. Use the rows below to change access to existing notes.</p><div id="accessMatrix"></div></div>
           <section class="settings-card" id="backupCard" hidden><h2>Google Drive backups</h2>
             <p>Includes every synced note, archived items, and the full database.</p>
             <p id="backupStatus" role="status"></p>
@@ -107,11 +112,16 @@
       <h2 id="organizerTitle"></h2>
       <label>Title <input id="organizerName" maxlength="160"></label>
       <button type="button" id="renameItem" class="secondary">Rename</button>
+      <button type="button" id="pinItem" class="secondary" hidden>Pin to top</button>
       <div id="moveFields"><label>Move under <select id="moveDestination"></select></label>
         <button type="button" id="moveItem" class="secondary">Move note</button></div>
       <p id="organizerError" class="error" role="alert"></p>
       <div class="dialog-actions"><button type="button" id="archiveItem" class="secondary">Archive…</button>
         <button type="button" id="closeOrganizer" class="secondary">Close</button></div>
+    </dialog>
+    <dialog id="replacePinDialog" class="dialog" aria-labelledby="replacePinText">
+      <p id="replacePinText"></p>
+      <form method="dialog"><button value="cancel" autofocus>Cancel</button> <button value="replace">Replace pin</button></form>
     </dialog>
     <div id="titleDialog" class="modal-backdrop" hidden>
       <form id="titleForm" class="dialog" role="dialog" aria-modal="true" aria-labelledby="titleDialogHeading">
@@ -123,6 +133,6 @@
     </div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
   </div>
-  <script type="module" src="/app.js?v=terminal-green-29"></script>
+  <script type="module" src="/app.js?v=terminal-green-37"></script>
 </body>
 </html>

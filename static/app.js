@@ -208,7 +208,9 @@ async function api(path, options = {}) {
   }
   return payload;
 }
-function showApp(authenticated) {
+function showApp(authenticated, providers = []) {
+  state.speechProviders = providers;
+  refreshVoicePicker();
   finishReading();
 
   if (!authenticated) state.canManagePermissions = false;
@@ -217,6 +219,12 @@ function showApp(authenticated) {
   $("#sidebarProjectButton").hidden = !state.canManagePermissions;
   $("#welcomeProjectButton").hidden = !state.canManagePermissions;
   if (authenticated) {
+    if (!localStorage.getItem("gj-device-proof")) {
+      const device = crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
+      api("/api/device-binding", {method:"POST",body:JSON.stringify({device})})
+        .then(result => { if (result.saved) localStorage.setItem("gj-device-proof", device); })
+        .catch(() => {});
+    }
     applyTheme(state.theme);
     const bookmark = readBookmark();
     const reopen = bookmark?.id || sessionStorage.getItem(refreshNoteKey);
@@ -304,6 +312,32 @@ function openOrganizer(item, kind) {
   $("#organizerTitle").textContent = item.title;
   $("#organizerName").value = item.title;
   $("#organizerError").textContent = "";
+  const pin = $("#pinItem");
+  pin.hidden = kind !== "project";
+  pin.textContent = (state.projects.find(project => project.pinned)?.id || null) === item.id ? "Unpin" : "Pin to top";
+  pin.onclick = () => {
+    const current = (state.projects.find(project => project.pinned)?.id || null);
+    const previous = state.projects.find(project => project.id === current);
+    const finish = async () => {
+      try {
+        await api("/api/project-pin", {method:"POST", body:JSON.stringify({project_id:current === item.id ? null : item.id, previous:current})});
+        dialog.close();
+        await loadProjects();
+      } catch (error) {
+        $("#organizerError").textContent = error.message;
+        if (error.status === 409) await loadProjects();
+      }
+    };
+    if (previous && current !== item.id) {
+      const prompt = $("#replacePinDialog");
+      $("#replacePinText").textContent = "Replace “" + previous.title + "” with “" + item.title + "” as your pinned project?";
+      prompt.returnValue = "";
+      prompt.onclose = () => {
+        if (prompt.returnValue === "replace" && (state.projects.find(project => project.pinned)?.id || null) === current) finish();
+      };
+      prompt.showModal();
+    } else finish();
+  };
   $("#moveFields").hidden = kind !== "note";
   const destination = $("#moveDestination");
   destination.replaceChildren();
@@ -378,11 +412,30 @@ async function loadArchive() {
 }
 function renderTree() {
   const host = $("#projectTree"); host.replaceChildren();
-  for (const project of state.projects) {
+  const pinned = (state.projects.find(project => project.pinned)?.id || null);
+  const ordered = [...state.projects].sort((a,b) => Number(b.id === pinned) - Number(a.id === pinned));
+  for (const project of ordered) {
     const group = document.createElement("section"); group.className = "project-group";
     const phead = document.createElement("button"); phead.className = `tree-project ${state.selectedProject === project.id ? "active" : ""}`;
-    phead.innerHTML = `<span class="chevron">${project.collapsed ? "›" : "⌄"}</span><span class="folder-icon">▰</span><span class="tree-label">${escapeHTML(project.title)}</span><span class="tree-add" title="Add a note">＋</span>`;
-    phead.addEventListener("click", e => { if (e.target.closest(".tree-add")) { state.selectedProject = project.id; openTitleDialog("note",null); } else { project.collapsed = !project.collapsed; state.selectedProject = project.id; renderTree(); if (state.note && state.note.project_id !== project.id) closeEditor(); } });
+    phead.innerHTML = `<span class="chevron">${project.collapsed ? "›" : "⌄"}</span><span class="folder-icon">${project.id === pinned ? "📌" : "▰"}</span><span class="tree-label">${escapeHTML(project.title)}</span><span class="tree-add" title="Add a note">＋</span>`;
+    phead.setAttribute("aria-expanded", String(!project.collapsed));
+    phead.addEventListener("click", async event => {
+      state.selectedProject = project.id;
+      if (event.target.closest(".tree-add")) {
+        openTitleDialog("note",null);
+        return;
+      }
+      phead.disabled = true;
+      try {
+        const result = await api("/api/project-collapse", {method:"POST", keepalive:true,
+          body:JSON.stringify({project_id:project.id, collapsed:!project.collapsed})});
+        const current = state.projects.find(item => item.id === project.id);
+        if (current) current.collapsed = result.collapsed;
+        renderTree();
+        if (state.note && state.note.project_id !== project.id) closeEditor();
+      } catch (error) { toast(error.message); }
+      finally { phead.disabled = false; }
+    });
     appendTreeItem(group, phead, project, "project");
     if (!project.collapsed) {
       const notes = flatten(project), map = new Map(notes.map(note => [note.id, note]));
@@ -398,11 +451,11 @@ function renderTree() {
     }
     host.append(group);
   }
-  try { localStorage.setItem("gj-project-tree",JSON.stringify(state.projects.map(p=>({...p,notes:(p.notes||[]).map(({body,...note})=>note)})))); } catch {}
+  try { localStorage.setItem("gj-project-tree:" + localStorage.getItem("gj-session-id"),JSON.stringify(state.projects.map(p=>({...p,notes:(p.notes||[]).map(({body,...note})=>note)})))); } catch {}
 }
 async function loadProjects() {
-  try { state.projects = await api("/api/projects"); localStorage.setItem("gj-project-tree",JSON.stringify(state.projects.map(p=>({...p,notes:(p.notes||[]).map(({body,...note})=>note)})))); renderTree(); setStatus("Synced"); }
-  catch (error) { try { state.projects=JSON.parse(localStorage.getItem("gj-project-tree")||"[]"); renderTree(); } catch {} setStatus(navigator.onLine ? "Sync issue" : "Offline", navigator.onLine ? "error" : "offline"); if(!state.projects.length)toast(error.message); }
+  try { state.projects = await api("/api/projects"); localStorage.setItem("gj-project-tree:" + localStorage.getItem("gj-session-id"),JSON.stringify(state.projects.map(p=>({...p,notes:(p.notes||[]).map(({body,...note})=>note)})))); renderTree(); setStatus("Synced"); }
+  catch (error) { try { state.projects=JSON.parse(localStorage.getItem("gj-project-tree:" + localStorage.getItem("gj-session-id"))||"[]"); renderTree(); } catch {} setStatus(navigator.onLine ? "Sync issue" : "Offline", navigator.onLine ? "error" : "offline"); if(!state.projects.length)toast(error.message); }
 }
 const scrollArea = $(".editor-wrap");
 const pullStatus = $("#pullStatus");
@@ -455,8 +508,6 @@ async function refreshProjects() {
   showRefreshing();
   try {
     const projects = await api("/api/projects");
-    const collapsed = new Set(state.projects.filter(item => item.collapsed).map(item => item.id));
-    for (const project of projects) project.collapsed = collapsed.has(project.id);
     state.projects = projects;
     renderTree();
     toast("Projects and notes refreshed.");
@@ -539,7 +590,6 @@ async function selectNote(noteId, bookmark = null) {
     line_numbers:useLocal?localLineNumbers:savedLineNumbers,
     baseRevision:useLocal?(draft.baseRevision??note.revision):note.revision, dirty:Boolean(useLocal&&draft.dirty) };
   if (onlineLoad && !localDirty && note.updated_at) writeDraft({...note,baseRevision:note.revision,dirty:false});
-  if (bookmark) project.collapsed = false;
   renderTree(); showEditor(bookmark); closeSidebar();
   if (localDirty) queueSave();
 }
@@ -593,6 +643,58 @@ const synthesis = window.speechSynthesis;
 const voicePicker = $("#speechVoice");
 const voicePreference = "gj-read-aloud-voice";
 const qualityVoice = /\b(natural|neural|premium|enhanced)\b/i;
+const cloudVoices = {
+  azure: [
+    ["azure:en-US-Phoebe:DragonHDLatestNeural", "Azure · Phoebe Dragon HD (HD regions)"],
+    ["azure:en-US-JennyNeural", "Azure · Jenny (English US)"],
+    ["azure:en-US-GuyNeural", "Azure · Guy (English US)"],
+  ],
+  google: [["en-US-Chirp-HD-F", "Google Cloud · en-US-Chirp-HD-F"]],
+};
+function selectedProvider() {
+  return state.speechProviders?.find(provider => cloudVoices[provider]?.some(([id]) => id === voicePicker.value));
+}
+let previewPlayer;
+function cloudPlayer(provider, audio = new AudioContext()) {
+  // Open the audio context during the tap so playback also works on iOS.
+  const voice = voicePicker.value.replace(/^azure:/, "");
+  const controller = new AbortController();
+  const ready = audio.resume();
+  let source, started, duration;
+  return {
+    async play(payload, ended) {
+      await ready;
+      const result = await api("/api/speech", {
+        method: "POST", body: JSON.stringify({...payload, provider, voice}), signal: controller.signal
+      });
+      const bytes = Uint8Array.from(atob(result.audioContent), c => c.charCodeAt(0));
+      const buffer = await audio.decodeAudioData(bytes.buffer);
+      if (controller.signal.aborted) return;
+      source = audio.createBufferSource();
+      source.buffer = buffer;
+      source.connect(audio.destination);
+      source.onended = ended;
+      duration = buffer.duration;
+      started = audio.currentTime;
+      source.start();
+    },
+    fraction() {
+      return duration ? Math.min(1, (audio.currentTime - started) / duration) : 0;
+    },
+    pause() { return audio.suspend(); },
+    resume() { return audio.resume(); },
+    close(closeContext = true) {
+      controller.abort();
+      if (source) { source.onended = null; source.stop(); source.disconnect(); }
+      if (closeContext && audio.state !== "closed") audio.close().catch(() => {});
+    }
+  };
+}
+function stopPreview() {
+  previewPlayer?.close();
+  previewPlayer = null;
+}
+
 function availableVoices() {
   return synthesis?.getVoices() || [];
 }
@@ -609,6 +711,11 @@ function refreshVoicePicker() {
   const voices = availableVoices();
   const saved = localStorage.getItem(voicePreference);
   voicePicker.replaceChildren(new Option(voices.length ? "Automatic (on device)" : "No voices available", ""));
+  for (const provider of state.speechProviders || []) {
+    for (const [id, label] of cloudVoices[provider] || []) {
+      voicePicker.append(new Option(label, id));
+    }
+  }
   for (const english of [true, false]) {
     const languageGroup = english ? "English" : "Other languages";
     const subset = voices.filter(voice => /^en(?:[-_]|$)/i.test(voice.lang) === english);
@@ -622,19 +729,28 @@ function refreshVoicePicker() {
       if (choices.length) voicePicker.append(group);
     }
   }
-  $("#onlineVoiceInfo").hidden = !voices.some(voice => !voice.localService);
-  voicePicker.value = voices.some(voice => voice.voiceURI === saved) ? saved : "";
-  voicePicker.disabled = !voices.length;
-  $("#previewVoice").disabled = !preferredVoice();
+  voicePicker.value = Array.from(voicePicker.options).some(option => option.value === saved) ? saved : "";
+  voicePicker.disabled = voicePicker.options.length === 1;
+  $("#onlineVoiceInfo").hidden = !selectedProvider() && !voices.some(voice => !voice.localService);
+  $("#previewVoice").disabled = !selectedProvider() && !preferredVoice();
 }
 voicePicker.onchange = () => {
+  stopPreview();
   localStorage.setItem(voicePreference, voicePicker.value);
   refreshVoicePicker();
 };
-$("#previewVoice").onclick = () => {
+$("#previewVoice").onclick = async () => {
+  stopPreview();
+  if (selectedProvider()) {
+    synthesis?.cancel();
+    const player = previewPlayer = cloudPlayer(selectedProvider());
+    try { await player.play({preview: true}, stopPreview); }
+    catch (error) { if (previewPlayer === player) { stopPreview(); toast(error.message); } }
+    return;
+  }
   const voice = preferredVoice();
   if (!voice) return;
-  synthesis.cancel();
+  synthesis?.cancel();
   const sample = new SpeechSynthesisUtterance("Here’s a thought. What would you like to work on today?");
   sample.voice = voice;
   sample.lang = voice.lang;
@@ -645,11 +761,15 @@ refreshVoicePicker();
 let reading = null;
 
 function finishReading(restoreCursor = false) {
+  stopPreview();
   if (!reading) return;
   const session = reading;
+  session.updatePosition?.();
+  session.player?.close(false);
+  session.audio?.close().catch(() => {});
   reading = null;
   $("#speechControls").hidden = true;
-  synthesis.cancel();
+  synthesis?.cancel();
   speechButton.hidden = false;
   if (!restoreCursor || state.note?.id !== session.noteId) return;
 
@@ -668,9 +788,11 @@ function finishReading(restoreCursor = false) {
 speechButton.onmousedown = event => event.preventDefault();
 speechButton.onclick = () => {
   if (reading) return finishReading(true);
-  if (!synthesis || !window.SpeechSynthesisUtterance) return toast("This browser does not support read aloud.");
+  stopPreview();
+  const cloud = selectedProvider();
+  if (!cloud && (!synthesis || !window.SpeechSynthesisUtterance)) return toast("This browser does not support read aloud.");
   const voice = preferredVoice();
-  if (!voice) return toast("Choose an available voice in Settings → Read aloud.");
+  if (!cloud && !voice) return toast("Choose an available voice in Settings → Read aloud.");
   const field = $("#editorFallback");
   const range = state.editor?.state.selection.main;
   const from = range?.from ?? field.selectionStart;
@@ -679,7 +801,8 @@ speechButton.onclick = () => {
   const end = from === to ? body.length : to;
   if (!body.slice(from, end).trim()) return toast("Place the cursor before text to read.");
   const session = { noteId: state.note.id, position: from, from, to, direction: field.selectionDirection };
-  synthesis.cancel();
+  synthesis?.cancel();
+  if (cloud) session.audio = new AudioContext();
   reading = session;
   speechButton.hidden = true;
   const passages = [];
@@ -698,11 +821,29 @@ speechButton.onclick = () => {
   pauseButton.textContent = "Pause";
   $("#speechControls").hidden = false;
   function cancelPassage() {
+    session.player?.close(false);
+    session.player = null;
+    session.updatePosition = null;
     session.utterance = null;
-    synthesis.cancel();
+    synthesis?.cancel();
   }
   function playPassage(start) {
     const text = body.slice(start, passages[index].end);
+    if (cloud) {
+      const player = session.player = cloudPlayer(cloud, session.audio);
+      session.updatePosition = () => {
+        const estimate = Math.floor(text.length * player.fraction());
+        session.position = start + (text.slice(0, estimate).match(/^.*\s/s)?.[0].length || 0);
+      };
+      player.play({note_id: session.noteId, text}, () => {
+        if (reading !== session || session.player !== player) return;
+        if (index + 1 < passages.length) moveToPassage(index + 1);
+        else { session.updatePosition = null; session.position = end; finishReading(true); }
+      }).catch(error => {
+        if (reading === session && session.player === player) { finishReading(true); toast(error.message); }
+      });
+      return;
+    }
     const utterance = new SpeechSynthesisUtterance(text);
     session.utterance = utterance;
     utterance.voice = voice;
@@ -737,7 +878,9 @@ speechButton.onclick = () => {
   pauseButton.onclick = () => {
     paused = !paused;
     pauseButton.textContent = paused ? "Play" : "Pause";
-    if (paused) cancelPassage();
+    if (cloud && session.player) {
+      if (paused) session.player.pause(); else session.player.resume();
+    } else if (paused) cancelPassage();
     else playPassage(session.position);
   };
   $("#speechBack").onclick = () => moveToPassage(Math.max(0, index - 1));
@@ -851,7 +994,6 @@ importFile.onchange = async () => {
     });
     if (state.note) await saveNow();
     project.notes.push(note);
-    project.collapsed = false;
     await selectNote(note.id);
     toast("Imported into " + project.title);
   } catch (error) {
@@ -943,7 +1085,23 @@ async function driveAction(action, extra = {}) {
 }
 $("#backupNow").onclick = () => driveAction("run");
 $("#backupInterval").onchange = event => driveAction("schedule",{hours:Number(event.target.value)});
+async function auditWebhook(options) {
+  try {
+    const info = await api("/api/audit-webhook", options);
+    $("#auditWebhookStatus").textContent = info.configured ? info.status : "Disconnected";
+    $("#removeAuditWebhook").hidden = !info.configured;
+    if (options) $("#auditWebhookUrl").value = "";
+  } catch (err) { toast(err.message); }
+}
+$("#auditWebhookForm").onsubmit = event => {
+  event.preventDefault();
+  const url = $("#auditWebhookUrl").value.trim();
+  if (url) auditWebhook({method:"POST", body:JSON.stringify({url})});
+};
+$("#removeAuditWebhook").onclick = () => auditWebhook({method:"POST", body:JSON.stringify({url:""})});
 async function showSettings() {
+  $("#auditWebhookCard").hidden = !state.canManagePermissions;
+  if (state.canManagePermissions) auditWebhook();
   loadBackups();
   refreshVoicePicker();
   finishReading();
@@ -956,8 +1114,8 @@ async function loadSessions() {
       const status = session.revoked_at ? "Revoked" : Date.parse(session.expires_at) <= Date.now() ? "Expired" : "Active";
       const lastUsed = session.last_used_at ? localTimestamp(session.last_used_at) : "Never";
       const expires = localTimestamp(session.expires_at);
-      const disconnect = status === "Active" ? `<button data-disconnect="${session.id}" class="revoke-button">Disconnect</button>` : "";
-      return `<div class="token-row"><span><b>${escapeHTML(session.client_name)}</b><small>${status}${session.can_manage_permissions?" · Can manage permissions":""} · Last used ${lastUsed} · Expires ${expires}</small></span>${status==="Active" ? `<label><input type="checkbox" data-backup="${session.id}" ${session.can_backup?"checked":""}> Manage full backups</label>` : ""}${disconnect}</div>`;
+      const disconnect = status !== "Revoked" ? `<button data-disconnect="${session.id}" class="revoke-button">Disconnect</button>` : "";
+      return `<div class="token-row"><span><b>${escapeHTML(session.client_name)}${session.is_ai ? " · AI" : ""}</b><small>${status}${session.can_manage_permissions?" · Can manage permissions":""} · Last used ${lastUsed} · Expires ${expires}</small></span>${status==="Active" && !session.is_ai ? `<label><input type="checkbox" data-backup="${session.id}" ${session.can_backup?"checked":""}> Manage full backups</label>` : ""}${disconnect}</div>`;
     }).join("") : "<p class='muted'>No recorded sessions.</p>";
     list.querySelectorAll("[data-backup]").forEach(box => box.onchange = async () => {
       box.disabled = true;
@@ -985,13 +1143,21 @@ async function loadAccessMatrix() {
     const matrix = await api("/api/access-matrix");
     const host = $("#accessMatrix");
     if (!matrix.sessions.length) { host.innerHTML="<p class='muted'>No active sessions to grant access to.</p>"; return; }
-    const header = `<thead><tr><th>Note</th>${matrix.sessions.map(session=>`<th>${escapeHTML(session.client_name)}</th>`).join("")}</tr></thead>`;
+    const header = `<thead><tr><th>Note</th>${matrix.sessions.map(session=>`<th>${escapeHTML(session.client_name)}${session.is_ai ? " · AI" : ""}</th>`).join("")}</tr></thead>`;
+    const defaults = matrix.sessions.map(session => `<td><input type="checkbox" data-default-session="${session.id}" aria-label="Grant ${escapeHTML(session.client_name)} access to new notes" ${session.default_note_access ? "checked" : ""}></td>`).join("");
     const rows = matrix.projects.map(project => {
       const section = `<tr class="access-project"><th colspan="${matrix.sessions.length+1}">${escapeHTML(project.title)}</th></tr>`;
       const notes = project.notes.map(note => `<tr><th>${escapeHTML(note.title||"Untitled note")}</th>${matrix.sessions.map(session=>`<td><input type="checkbox" aria-label="Allow ${escapeHTML(session.client_name)} to access ${escapeHTML(note.title||"Untitled note")}" data-note="${note.id}" data-session="${session.id}" ${note.access[session.id]?"checked":""}></td>`).join("")}</tr>`).join("");
       return section+notes;
     }).join("");
-    host.innerHTML = `<div class="access-matrix-scroll"><table class="access-matrix-table">${header}<tbody>${rows}</tbody></table></div>`;
+    host.innerHTML = `<div class="access-matrix-scroll"><table class="access-matrix-table">${header}<tbody><tr><th>Default for new notes</th>${defaults}</tr>${rows}</tbody></table></div>`;
+    host.querySelectorAll("[data-default-session]").forEach(input => input.onchange = async () => {
+      input.disabled = true;
+      try {
+        await api("/api/default-note-access", {method:"POST", body:JSON.stringify({session_id:input.dataset.defaultSession, allowed:input.checked})});
+      } catch (error) { input.checked = !input.checked; toast(error.message); }
+      finally { input.disabled = false; }
+    });
     host.querySelectorAll("input[data-note][data-session]").forEach(input=>input.addEventListener("change",async()=>{
       input.disabled=true;
       try {
@@ -1016,11 +1182,35 @@ window.addEventListener("online",()=>{if(state.note)saveNow();else if(token())lo
 document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="hidden"&&state.note)saveNow();});
 
 $("#setupForm").addEventListener("submit",async event=>{event.preventDefault();const form=new FormData(event.currentTarget);try{await api("/api/setup",{method:"POST",body:JSON.stringify({username:form.get("username")})});$("#setupForm").hidden=true;$("#tokenForm").hidden=false;$("#tokenHelp").hidden=false;$("#authIntro").textContent="Account created. Generate a one-use connection token on the Docker host, then paste it here.";}catch(error){$("#authError").textContent=error.message;}});
-$("#tokenForm").addEventListener("submit",async event=>{event.preventDefault();const form=event.currentTarget;try{const result=await api("/api/login",{method:"POST",body:JSON.stringify({token:new FormData(form).get("token")})});localStorage.setItem(AUTH_KEY,result.session);localStorage.setItem("gj-session-id",result.session_id||"");state.canManagePermissions=Boolean(result.can_manage_permissions);form.reset();showApp(true);}catch(error){try{if(token()){const session=await api("/api/session");if(session.authenticated){state.canManagePermissions=Boolean(session.can_manage_permissions);form.reset();showApp(true);return;}}}catch{}$("#authError").textContent=error.message;}});
+$("#tokenForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector("button");
+  if (button.disabled) return;
+  button.disabled = true;
+  $("#authError").textContent = "";
+  try {
+    const data = {token:new FormData(form).get("token"), device:localStorage.getItem("gj-device-proof")};
+    const login = () => api("/api/login", {method:"POST",body:JSON.stringify(data)});
+    let result = await login();
+    if (result.confirm_reconnect) {
+      if (!confirm("Reconnect as “" + result.client_name + "”? This will replace its previous login.")) return;
+      data.confirmed_id = result.confirm_reconnect;
+      result = await login();
+    }
+    localStorage.setItem("gj-device-proof", result.device);
+    localStorage.setItem(AUTH_KEY, result.session);
+    localStorage.setItem("gj-session-id", result.session_id);
+    state.canManagePermissions = Boolean(result.can_manage_permissions);
+    form.reset();
+    showApp(true, result.speech_providers);
+  } catch (error) { $("#authError").textContent = error.message; }
+  finally { button.disabled = false; }
+});
 async function start() {
   applyTheme(state.theme);
   try { const status=await fetch("/api/setup-status").then(r=>r.json()); if(status.needs_setup){$("#authIntro").textContent="Create your local account. Then generate a one-use token from the Docker host CLI for this device.";$("#setupForm").hidden=false; } else {$("#tokenForm").hidden=false;$("#tokenHelp").hidden=false;} } catch {$("#tokenForm").hidden=false;$("#tokenHelp").hidden=false;}
-  if(token()) { try { const session=await api("/api/session"); if(session.authenticated){state.canManagePermissions=Boolean(session.can_manage_permissions);showApp(true);return;} } catch {} localStorage.removeItem(AUTH_KEY);localStorage.removeItem("gj-session-id"); }
+  if(token()) { try { const session=await api("/api/session"); if(session.authenticated){state.canManagePermissions=Boolean(session.can_manage_permissions);showApp(true,session.speech_providers);return;} } catch {} localStorage.removeItem(AUTH_KEY);localStorage.removeItem("gj-session-id"); }
   $("#authScreen").hidden=false;
   if("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(()=>{});
 }

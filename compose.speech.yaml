@@ -1,0 +1,11 @@
+services:
+  brainstorming:
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google-speech.json
+    volumes:
+      - type: bind
+        source: ${GOOGLE_TTS_CREDENTIALS_FILE:?Set the absolute host path to your Google speech credentials}
+        target: /run/secrets/google-speech.json
+        read_only: true
+        bind:
+          create_host_path: false

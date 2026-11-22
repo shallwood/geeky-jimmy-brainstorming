@@ -5,6 +5,10 @@ services:
     environment:
       DATA_DIR: ${DATA_DIR:-/data}
       PORT: 8080
+      MCP_PUBLIC_ORIGIN: ${MCP_PUBLIC_ORIGIN:-https://notes.accountabilitybot.cc}
+      AZURE_SPEECH_KEY: ${AZURE_SPEECH_KEY:-}
+      AZURE_SPEECH_ENDPOINT: ${AZURE_SPEECH_ENDPOINT:-}
+      AZURE_SPEECH_REGION: ${AZURE_SPEECH_REGION:-}
       BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:-}
     ports:
       - "127.0.0.1:${HOST_PORT:-8081}:8080"
