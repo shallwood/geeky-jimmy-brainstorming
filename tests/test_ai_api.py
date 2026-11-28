@@ -146,12 +146,12 @@ class MatrixApiTests(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/default-note-access", self.other, {"session_id":other,"allowed":True})[0],401)
 
     def test_collapsed_project_survives_reload_per_session(self):
-        def browser():
+        def browser(name):
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
-                server.create_token("Browser", can_manage_permissions=True)
+                server.create_token(name, can_manage_permissions=True)
             return server.redeem_token(out.getvalue().splitlines()[1])["session"]
-        first, second = browser(), browser()
+        first, second = browser("Desktop"), browser("Phone")
         def collapsed(key):
             return self.request("GET", "/api/projects", key)[1][0]["collapsed"]
         def set_state(value):

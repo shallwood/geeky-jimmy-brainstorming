@@ -45,6 +45,11 @@ Generate one token for each device/client and enter it in that device’s connec
 docker compose exec brainstorming python server.py token create --name "iPhone"
 ```
 
+Connection names match exactly, including case. Reuse the same name to renew the existing connection and keep its note permissions. For a new name, answer the CLI confirmation once. Reissuing before first login supersedes the earlier unused token. For browsers, the current login continues until the replacement is redeemed and confirmed. For an AI connection, issuance immediately rotates the bearer and invalidates its OAuth grants; reconnect the client with the new credential. If older records share a name, issuance by name stops. Use `session list` to inspect them and `--replace-session ID` for a specific browser record.
+
+Run `docker compose exec brainstorming python server.py clean devices` to review connections idle for at least 24 hours. The host CLI lists their names, IDs and last activity before asking about each deletion. Press Enter to keep a connection. For a never-used connection, the 24 hours start at creation. Deletion removes that connection’s login and note permissions while preserving its notes and audit history.
+
+
 New sessions start without access to notes. In Settings → Note access by session, check the notes each active session may read and edit. To connect a trusted control device that can manage the matrix, create its token with `--manage-permissions`.
 
 When upgrading an existing database, current note access is preserved. The earliest active session becomes the initial permission manager; other active sessions can be individually restricted in the matrix.

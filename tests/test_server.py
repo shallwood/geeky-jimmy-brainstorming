@@ -49,6 +49,39 @@ class BrainstormingModelTests(unittest.TestCase):
         self.assertEqual(events[-1]["subject_title"],"Renamed")
         self.assertEqual(actor,"Jimmy")
 
+    def test_manual_cleanup_preserves_audit_and_rechecks_activity(self):
+        from unittest.mock import patch
+
+        old = "2000-01-01T00:00:00+00:00"
+        with server.connect() as db:
+            for name in ("Delete", "Keep", "Reconnect", "Recent"):
+                db.execute("""INSERT INTO web_sessions
+                    (id,user_id,token_hash,client_name,created_at,expires_at,is_ai,last_used_at)
+                    VALUES(?,?,?,?,?,?,1,?)""", (name,self.user_id,name,name,old,server.token_expiry(),
+                                                  server.stamp() if name == "Recent" else None))
+            db.execute("""INSERT INTO change_events(id,actor_type,actor_id,action,occurred_at)
+                VALUES('event','ai','Delete','edited',?)""", (old,))
+            before = tuple(db.execute("SELECT * FROM change_events").fetchone())
+
+        output = io.StringIO()
+        def respond(prompt):
+            if "Reconnect [" in prompt:
+                with server.connect() as db:
+                    db.execute("UPDATE web_sessions SET last_used_at=? WHERE id='Reconnect'", (server.stamp(),))
+            return "" if "Keep [" in prompt else "yes"
+
+        with contextlib.redirect_stdout(output), patch("builtins.input", side_effect=respond):
+            server.purge_stale_connections()
+        self.assertNotIn("Recent", output.getvalue())
+        with server.connect() as db:
+            self.assertEqual([r[0] for r in db.execute("SELECT id FROM web_sessions ORDER BY id")],
+                             ["Keep", "Recent", "Reconnect"])
+            self.assertEqual([tuple(r) for r in db.execute("SELECT * FROM change_events")], [before])
+        audit = io.StringIO()
+        with patch("sys.argv", ["server.py","audit","list"]), contextlib.redirect_stdout(audit):
+            server.main()
+        self.assertIn("Delete  edited", audit.getvalue())
+
     def test_token_is_single_use_and_session_can_be_revoked(self):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -63,6 +96,39 @@ class BrainstormingModelTests(unittest.TestCase):
             session_row = db.execute("SELECT revoked_at FROM web_sessions WHERE id=?", (session["session_id"],)).fetchone()
         self.assertIsNotNone(token_row["used_at"])
         self.assertIsNotNone(session_row["revoked_at"])
+
+    def test_same_name_rotates_identity_without_duplicating(self):
+        from unittest.mock import patch
+        from concurrent.futures import ThreadPoolExecutor
+        def issue(name, **options):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                server.create_token(name, **options)
+            return output.getvalue().splitlines()[1]
+        with patch("builtins.input",return_value="n"), self.assertRaises(SystemExit):
+            issue("Desk",confirm_new=True)
+        with patch("builtins.input",return_value="yes"):
+            old = issue("Desk",confirm_new=True)
+        fresh = issue("Desk",confirm_new=True)
+        self.assertIsNone(server.redeem_token(old))
+        sid = server.redeem_token(fresh)["session_id"]
+        with contextlib.redirect_stdout(io.StringIO()), ThreadPoolExecutor(2) as workers:
+            list(workers.map(server.create_token, ["Desk","Desk"]))
+        with server.connect() as db:
+            pending = db.execute("SELECT replacement_id FROM api_tokens WHERE used_at IS NULL AND revoked_at IS NULL").fetchall()
+        self.assertEqual([r[0] for r in pending], [sid])
+        renewed = issue("Desk")
+        self.assertEqual(server.redeem_token(renewed)["confirm_reconnect"],sid)
+        self.assertEqual(server.redeem_token(renewed,confirmed_id=sid)["session_id"],sid)
+        ai = issue("Helper",is_ai=True)
+        note = server.create_note_record("p"*32,None,"Granted",self.user_id)
+        with server.connect() as db:
+            aid = db.execute("SELECT id FROM web_sessions WHERE client_name='Helper'").fetchone()[0]
+            db.execute("INSERT INTO session_note_access VALUES(?,?,1,?)",(aid,note["id"],server.stamp()))
+        self.assertNotEqual(ai,issue("Helper"))
+        with server.connect() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM web_sessions").fetchone()[0],2)
+            self.assertEqual(db.execute("SELECT allowed FROM session_note_access WHERE session_id=? AND note_id=?",(aid,note["id"])).fetchone()[0],1)
 
     def test_browser_reconnect_replace_and_pin(self):
         def issue(**kwargs):
@@ -88,7 +154,7 @@ class BrainstormingModelTests(unittest.TestCase):
                 server.set_project_pin(db,sid,True,None,None)
         with server.connect() as db:
             db.execute("UPDATE web_sessions SET revoked_at=? WHERE id=?", (server.stamp(),sid))
-        self.assertIsNone(server.redeem_token(issue(),second["device"]))
+        self.assertEqual(server.redeem_token(issue(),second["device"])["confirm_reconnect"],sid)
         transfer = issue(replacement_id=sid)
         self.assertEqual(server.redeem_token(transfer)["confirm_reconnect"], sid)
         third = server.redeem_token(transfer, confirmed_id=sid)

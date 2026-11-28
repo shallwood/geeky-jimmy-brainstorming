@@ -148,6 +148,9 @@ def init_db() -> None:
                 attachment_id TEXT NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
                 position INTEGER, PRIMARY KEY(note_id, attachment_id)
             );
+            CREATE TABLE IF NOT EXISTS audit_connection_names (
+                id TEXT PRIMARY KEY, client_name TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS change_events (
                 id TEXT PRIMARY KEY, actor_type TEXT NOT NULL DEFAULT 'user',
                 actor_id TEXT, note_id TEXT, action TEXT NOT NULL,
@@ -446,6 +449,13 @@ def redeem_token(token: str, device="", confirmed_id=None) -> dict | None:
                                 (hashlib.sha256(device.encode()).hexdigest(), row["user_id"])).fetchone()
             if target and target["revoked_at"]:
                 return None
+        if not row["replacement_id"]:
+            # A pre-upgrade token cannot create a duplicate or claim a different
+            # connection merely because its label now matches that connection.
+            named = db.execute("SELECT id FROM web_sessions WHERE user_id=? AND client_name=?",
+                               (row["user_id"],row["name"])).fetchall()
+            if named and (len(named) != 1 or not target or named[0]["id"] != target["id"]):
+                return None
         if confirmed_id is not None and (not target or target["id"] != confirmed_id):
             return None
         if target and confirmed_id is None:
@@ -518,7 +528,8 @@ class Handler(BaseHTTPRequestHandler):
                     WHERE g.digest=? AND g.kind='access' AND g.expires>CAST(strftime('%s','now') AS INTEGER)
                     AND s.is_ai=1 AND s.revoked_at IS NULL AND s.expires_at>?""", (digest, stamp())).fetchone()
             if session:
-                db.execute("UPDATE web_sessions SET last_used_at=? WHERE id=?", (stamp(), session["id"]))
+                if not db.execute("UPDATE web_sessions SET last_used_at=? WHERE id=?", (stamp(), session["id"])).rowcount:
+                    return False
                 self.can_backup = bool(session["can_backup"])
                 self.session_id = session["id"]
                 self.session_user_id = session["user_id"]
@@ -784,9 +795,10 @@ class Handler(BaseHTTPRequestHandler):
             with connect() as db:
                 rows = db.execute("""
                     SELECT e.id,e.action,e.subject_title,e.note_id,e.revision,e.occurred_at,
-                           COALESCE(ai.client_name,u.username,'Unknown user') AS actor
+                           COALESCE(ai.client_name,purged.client_name,u.username,'Unknown user') AS actor
                     FROM change_events e LEFT JOIN users u ON u.id=e.actor_id
                     LEFT JOIN web_sessions ai ON e.actor_type='ai' AND ai.id=e.actor_id
+            LEFT JOIN audit_connection_names purged ON e.actor_type='ai' AND purged.id=e.actor_id
                     WHERE e.note_id IS NULL OR EXISTS (
                         SELECT 1 FROM session_note_access a WHERE a.note_id=e.note_id AND a.session_id=? AND a.allowed=1
                     )
@@ -1099,44 +1111,122 @@ def local_timestamp(value: str) -> str:
     return datetime.fromisoformat(value).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
-def create_token(name: str, can_manage_permissions: bool = False, is_ai: bool = False, replacement_id=None) -> None:
+def create_token(name: str, can_manage_permissions: bool = False, is_ai: bool = False,
+                 replacement_id=None, confirm_new=False) -> None:
     with connect() as db:
-        user = db.execute("SELECT id,username FROM users ORDER BY created_at LIMIT 1").fetchone()
+        db.execute("BEGIN IMMEDIATE")
+        user = db.execute("SELECT id FROM users ORDER BY created_at LIMIT 1").fetchone()
         if user is None:
             raise SystemExit("No account exists yet. Create your account in the web app first.")
-        if is_ai:
-            if can_manage_permissions:
-                raise SystemExit("AI sessions cannot manage permissions.")
-            token = "ai_" + secrets.token_urlsafe(40)
-            expires = token_expiry()
-            db.execute("INSERT INTO web_sessions(id,user_id,token_hash,client_name,created_at,expires_at,is_ai) "
-                       "VALUES(?,?,?,?,?,?,1)", (secrets.token_hex(16), user["id"], hashlib.sha256(token.encode()).hexdigest(),
-                                                name, stamp(), expires))
-            print("AI bearer token (shown once):")
-            print(token)
-            print(f"Expires: {local_timestamp(expires)}")
-            print("Grant note access in Settings. Use this bearer token with /mcp.")
-            return
         if replacement_id:
-            target = db.execute("SELECT client_name,can_manage_permissions FROM web_sessions WHERE id=? AND user_id=? AND is_ai=0",
-                                (replacement_id,user["id"])).fetchone()
-            if not target:
+            matches = db.execute("SELECT * FROM web_sessions WHERE user_id=? AND id=? AND is_ai=0",
+                                 (user["id"], replacement_id)).fetchall()
+            if not matches:
                 raise SystemExit("Choose an existing browser session ID from session list.")
-            name, can_manage_permissions = target
-            db.execute("UPDATE api_tokens SET revoked_at=? WHERE replacement_id=? AND used_at IS NULL", (stamp(),replacement_id))
-        elif not can_manage_permissions:
-            has_sessions = db.execute("SELECT 1 FROM web_sessions WHERE is_ai=0 LIMIT 1").fetchone()
-            if not has_sessions:
-                can_manage_permissions = True
-        token = secrets.token_urlsafe(36)
-        token_id, now, expires = secrets.token_hex(16), stamp(), token_expiry()
-        db.execute("INSERT INTO api_tokens(id,user_id,name,token_hash,created_at,expires_at,can_manage_permissions,replacement_id) VALUES(?,?,?,?,?,?,?,?)",
-                   (token_id,user["id"],name,hashlib.sha256(token.encode()).hexdigest(),now,expires,int(can_manage_permissions),replacement_id))
+            name = matches[0]["client_name"]
+        else:
+            matches = db.execute("SELECT * FROM web_sessions WHERE user_id=? AND client_name=?",
+                                 (user["id"], name)).fetchall()
+        if len(matches) > 1:
+            raise SystemExit("Multiple connections have that exact name. Check session list; no token issued.")
+        target = matches[0] if matches else None
+        now, expires = stamp(), token_expiry()
+        pending = db.execute("SELECT can_manage_permissions FROM api_tokens WHERE user_id=? AND name=? "
+                             "AND replacement_id IS NULL AND revoked_at IS NULL AND used_at IS NULL "
+                             "AND expires_at>? ORDER BY created_at DESC,id DESC LIMIT 1",
+                             (user["id"],name,now)).fetchone()
+        if target is None and pending is None and confirm_new:
+            # Human input must not hold SQLite's writer lock.
+            db.rollback()
+            try:
+                approved = input("Name not found. Create a new device reference? [y/N] ").strip().lower()
+            except EOFError:
+                approved = ""
+            if approved not in ("y","yes"):
+                raise SystemExit("No connection or token created.")
+            return create_token(name,can_manage_permissions,is_ai,replacement_id)
+        if target is not None:
+            if is_ai and not target["is_ai"]:
+                raise SystemExit("That name belongs to a browser connection.")
+            is_ai = bool(target["is_ai"])
+            if not is_ai:
+                replacement_id = target["id"]
+                can_manage_permissions = bool(target["can_manage_permissions"])
+        elif pending is not None:
+            if is_ai:
+                raise SystemExit("That name has a pending browser token.")
+            can_manage_permissions = bool(pending["can_manage_permissions"])
+        elif not is_ai and not can_manage_permissions:
+            can_manage_permissions = not db.execute("SELECT 1 FROM web_sessions WHERE is_ai=0 LIMIT 1").fetchone()
+        if is_ai and can_manage_permissions:
+            raise SystemExit("AI sessions cannot manage permissions.")
+        db.execute("UPDATE api_tokens SET revoked_at=? WHERE user_id=? AND used_at IS NULL AND revoked_at IS NULL "
+                   "AND ((name=? AND replacement_id IS NULL) OR replacement_id=?)",
+                   (now,user["id"],name,replacement_id))
+        if is_ai:
+            token = "ai_" + secrets.token_urlsafe(40)
+            digest = hashlib.sha256(token.encode()).hexdigest()
+            if target is not None:
+                db.execute("UPDATE web_sessions SET token_hash=?,expires_at=?,revoked_at=NULL WHERE id=?",
+                           (digest,expires,target["id"]))
+                db.execute("DELETE FROM oauth_grants WHERE session=?", (target["id"],))
+            else:
+                db.execute("INSERT INTO web_sessions(id,user_id,token_hash,client_name,created_at,expires_at,is_ai) "
+                           "VALUES(?,?,?,?,?,?,1)", (secrets.token_hex(16),user["id"],digest,name,now,expires))
+        else:
+            token = secrets.token_urlsafe(36)
+            db.execute("INSERT INTO api_tokens(id,user_id,name,token_hash,created_at,expires_at,can_manage_permissions,replacement_id) VALUES(?,?,?,?,?,?,?,?)",
+                       (secrets.token_hex(16),user["id"],name,hashlib.sha256(token.encode()).hexdigest(),now,expires,int(can_manage_permissions),replacement_id))
+    if is_ai:
+        print("AI bearer token (shown once):")
+        print(token)
+        print(f"Expires: {local_timestamp(expires)}")
+        return
     print("Connection token (shown once):")
     print(token)
     print(f"Expires: {local_timestamp(expires)}")
     print("Permission manager: " + ("yes" if can_manage_permissions else "no"))
     print("Paste this token into the web app's connection screen. Keep it private.")
+
+
+def purge_stale_connections() -> None:
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    eligible = "COALESCE(last_used_at,created_at) <= ?"
+    with connect() as db:
+        rows = db.execute(f"""SELECT id,client_name,last_used_at,created_at FROM web_sessions
+            WHERE {eligible} ORDER BY client_name COLLATE NOCASE,id""", (cutoff,)).fetchall()
+    if not rows:
+        print("No connections have been idle for 24 hours.")
+        return
+    print("Connections with no authenticated activity for at least 24 hours:")
+    for row in rows:
+        used = row["last_used_at"]
+        activity = f"last used {local_timestamp(used)}" if used else f"never used, created {local_timestamp(row['created_at'])}"
+        print(f"{row['client_name']}  [{row['id']}]  {activity}")
+    for row in rows:
+        label = f"{row['client_name']} [{row['id']}]"
+        try:
+            answer = input(f"Delete {label} and its permissions? [y/N] ")
+        except (EOFError, KeyboardInterrupt):
+            print("\nStopped.")
+            return
+        if answer.strip().lower() not in {"y", "yes"}:
+            continue
+        with connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute(f"SELECT * FROM web_sessions WHERE id=? AND {eligible}",
+                                 (row["id"], cutoff)).fetchone()
+            if not current:
+                print(f"Skipped {label}: no longer eligible.")
+                continue
+            if current["is_ai"]:
+                db.execute("INSERT INTO audit_connection_names(id,client_name) VALUES(?,?)",
+                           (current["id"], current["client_name"]))
+            db.execute("""UPDATE api_tokens SET revoked_at=COALESCE(revoked_at,?), replacement_id=NULL
+                       WHERE replacement_id=? OR (replacement_id IS NULL AND user_id=? AND name=? AND used_at IS NULL)""",
+                       (stamp(), current["id"], current["user_id"], current["client_name"]))
+            db.execute("DELETE FROM web_sessions WHERE id=?", (current["id"],))
+        print(f"Deleted {label}.")
 
 
 def main() -> None:
@@ -1156,6 +1246,8 @@ def main() -> None:
     session_parser = subparsers.add_parser("session", help="List connected devices")
     session_commands = session_parser.add_subparsers(dest="session_action", required=True)
     session_commands.add_parser("list", help="List all recorded connection sessions")
+    clean = subparsers.add_parser("clean", help="Clean up stale records")
+    clean.add_subparsers(dest="clean_action", required=True).add_parser("devices", help="Review and delete connections idle for 24 hours")
     audit_parser = subparsers.add_parser("audit", help="Read the note change audit log")
     audit_commands = audit_parser.add_subparsers(dest="audit_action", required=True)
     audit_list = audit_commands.add_parser("list", help="List recent note changes")
@@ -1166,7 +1258,9 @@ def main() -> None:
     init_db()
     if args.command == "token":
         if args.token_action == "create":
-            create_token(args.name.strip()[:80] or ("AI client" if args.ai else "Web app"), args.manage_permissions, args.ai, args.replace_session)
+            if len(args.name.strip()) > 80:
+                parser.error("Connection names are limited to 80 characters.")
+            create_token(args.name.strip() or ("AI client" if args.ai else "Web app"), args.manage_permissions, args.ai, args.replace_session, confirm_new=True)
         elif args.token_action == "list":
             with connect() as db:
                 rows = db.execute("SELECT id,name,created_at,expires_at,can_manage_permissions FROM api_tokens WHERE used_at IS NULL AND revoked_at IS NULL AND expires_at>? ORDER BY created_at DESC", (stamp(),)).fetchall()
@@ -1179,6 +1273,9 @@ def main() -> None:
             with connect() as db:
                 cur = db.execute("UPDATE api_tokens SET revoked_at=? WHERE id=? AND used_at IS NULL AND revoked_at IS NULL", (stamp(),args.token_id))
             print("Token revoked." if cur.rowcount else "No unused token found with that ID.")
+        return
+    if args.command == "clean":
+        purge_stale_connections()
         return
     if args.command == "session":
         with connect() as db:
@@ -1203,9 +1300,10 @@ def main() -> None:
         with connect() as db:
             rows = db.execute("""
                 SELECT e.action,e.subject_title,e.revision,e.occurred_at,
-                       COALESCE(ai.client_name,u.username,'Unknown user') AS actor
+                       COALESCE(ai.client_name,purged.client_name,u.username,'Unknown user') AS actor
                 FROM change_events e LEFT JOIN users u ON u.id=e.actor_id
                     LEFT JOIN web_sessions ai ON e.actor_type='ai' AND ai.id=e.actor_id
+            LEFT JOIN audit_connection_names purged ON e.actor_type='ai' AND purged.id=e.actor_id
                 ORDER BY e.occurred_at DESC,e.rowid DESC LIMIT ?
             """, (limit,)).fetchall()
         if not rows:

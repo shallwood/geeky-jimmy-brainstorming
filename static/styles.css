@@ -715,7 +715,7 @@ button:disabled {
   z-index:3
 }
 .access-matrix-table th:first-child {
-  min-width:150px;
+  width:clamp(6rem, 25vw, 8rem);
   text-align:left
 }
 .access-matrix-table tbody th {
@@ -725,8 +725,16 @@ button:disabled {
   background:var(--surface);
   color:var(--ink)
 }
+.access-name {
+  display:block;
+  width:clamp(6rem, 25vw, 8rem);
+  font-size:12px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap
+}
+.access-matrix-table .access-project td,
 .access-matrix-table .access-project th {
-  position:static;
   background:var(--surface-2);
   color:var(--accent-strong);
   text-align:left
@@ -1288,3 +1296,10 @@ h1.note-title { margin:0; overflow:hidden; text-overflow:ellipsis; white-space:n
 #pictureDialog p:empty { display:none; }
 #pictureDialog img { max-width:calc(96vw - 2rem); max-height:calc(94dvh - 4rem); object-fit:contain; }
 #pictureDialog::backdrop { background:#000b; }
+
+:root {--tag-ink:#ff8686}
+.note-tag, .cm-editor .cm-content .note-tag, .cm-editor .cm-content .note-tag * {color:var(--tag-ink)!important}
+:root[data-theme="light"] {--tag-ink:#ab2034}
+button.note-tag, a.note-web-link {font:inherit;text-decoration:underline;cursor:pointer}
+button.note-tag {padding:0;border:0;background:transparent}
+#externalLinkDialog label, #tagResults button {display:block;margin-block:.65rem}

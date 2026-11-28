@@ -43,10 +43,11 @@ def configure(db, url):
 def deliver(connect):
     with connect() as db:
         row = db.execute("""SELECT cfg.url,cfg.delivered_row,e.rowid AS sequence,e.*,
-            COALESCE(ai.client_name,u.username,e.actor_type) AS actor
+            COALESCE(ai.client_name,purged.client_name,u.username,e.actor_type) AS actor
             FROM discord_audit cfg JOIN change_events e ON e.rowid>cfg.delivered_row
             LEFT JOIN users u ON u.id=e.actor_id
             LEFT JOIN web_sessions ai ON e.actor_type='ai' AND ai.id=e.actor_id
+            LEFT JOIN audit_connection_names purged ON e.actor_type='ai' AND purged.id=e.actor_id
             ORDER BY e.rowid LIMIT 1""").fetchone()
     if not row:
         return 3

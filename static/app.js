@@ -1,3 +1,4 @@
+import {inlineTokens, prose, typedTrigger, webUrl} from "./inline-notes.js?v=1";
 let EditorView, ViewPlugin, Decoration, WidgetType, basicSetup, markdown, undo, redo;
 try {
   const modules = await Promise.all([
@@ -37,9 +38,136 @@ const PictureWidget = WidgetType && class extends WidgetType {
   toDOM() { return pictureButton(this.id); }
 };
 
+function editorText() {
+  return state.editor?.state.doc.toString() ?? $("#editorFallback").value;
+}
+function caret() {
+  return state.editor?.state.selection.main.head ?? $("#editorFallback").selectionEnd;
+}
+function snapshot(from, to) {
+  return {id:state.note?.id, source:editorText(), from, to};
+}
+function replaceCaptured(target, insert) {
+  if (!target.id || state.note?.id !== target.id || editorText() !== target.source) {
+    toast("The note changed. Try the insertion again.");
+    return;
+  }
+  const {from,to} = target;
+  if (state.editor) {
+    state.editor.dispatch({changes:{from,to,insert},selection:{anchor:from + insert.length}});
+    state.editor.focus();
+  } else {
+    const field = $("#editorFallback");
+    field.focus();
+    field.setSelectionRange(from,to);
+    if (!document.execCommand("insertText",false,insert)) {
+      field.setRangeText(insert,from,to,"end");
+      field.dispatchEvent(new Event("input"));
+    }
+  }
+}
+let pictureTarget, linkTarget;
+function runShortcut() {
+  const end = caret();
+  const trigger = typedTrigger(editorText(), end);
+  if (!trigger) return;
+  const target = snapshot(end - trigger.length, end);
+  if (trigger === ":pic: ") {
+    pictureTarget = target;
+    $("#pictureFile").click();
+  } else {
+    linkTarget = target;
+    $("#externalLinkForm").reset();
+    $("#externalLinkDialog").showModal();
+  }
+}
+$("#pictureFile").oncancel = () => {
+  pictureTarget = null;
+  (state.editor || $("#editorFallback")).focus();
+};
+$("#externalLinkDialog").onclose = () => {
+  linkTarget = null;
+  (state.editor || $("#editorFallback")).focus();
+};
+$("#externalLinkCancel").onclick = () => $("#externalLinkDialog").close();
+$("#externalLinkForm").onsubmit = event => {
+  event.preventDefault();
+  const href = webUrl($("#externalUrl").value.trim());
+  if (!href) { toast("Enter an http or https URL."); return; }
+  const url = href.replace(/\(/g,"%28").replace(/\)/g,"%29");
+  const label = ($("#externalLabel").value.trim() || href).replace(/[\\\[\]]/g, c => "\\" + c);
+  replaceCaptured(linkTarget, `[${label}](${url})`);
+  $("#externalLinkDialog").close();
+};
+
+async function tagEntries() {
+  // The projects endpoint filters notes to this connection on every request.
+  const projects = await api("/api/projects");
+  return projects.flatMap(project => project.notes.map(note => ({
+    id:note.id, title:note.title || "Untitled note", project:project.title,
+    tags:inlineTokens(note.id === state.note?.id ? editorText() : note.body || "")
+      .filter(t => t.type === "assignment").map(t => t.label)
+  })));
+}
+async function showTag(label) {
+  const dialog = $("#tagDialog"), list = $("#tagResults");
+  $("#tagHeading").textContent = "#" + label;
+  list.textContent = "Loading…";
+  dialog.showModal();
+  try {
+    const rows = (await tagEntries()).filter(row => row.tags.some(tag => tag.toLowerCase() === label.toLowerCase()));
+    list.replaceChildren();
+    if (!rows.length) list.textContent = "No matching notes.";
+    for (const row of rows) {
+      const button = document.createElement("button");
+      button.textContent = row.project + " › " + row.title;
+      button.onclick = () => { dialog.close(); selectNote(row.id); };
+      list.append(button);
+    }
+  } catch (error) { list.textContent = error.message; }
+}
+function tokenElement(t) {
+  const external = t.type === "external";
+  const node = document.createElement(external ? "a" : t.type === "reference" ? "button" : "span");
+  node.textContent = t.type === "assignment" ? "#" + t.label + "#" : t.label;
+  node.className = external ? "note-web-link" : "note-tag";
+  if (external) { node.href = t.href; node.target = "_blank"; node.rel = "noopener noreferrer"; }
+  if (t.type === "reference") { node.type = "button"; node.onclick = () => showTag(t.label); }
+  return node;
+}
+const LinkWidget = WidgetType && class extends WidgetType {
+  constructor(token) { super(); this.token = token; }
+  eq(other) { return this.token.type === other.token.type && this.token.href === other.token.href && this.token.label === other.token.label; }
+  toDOM() { return tokenElement(this.token); }
+};
+
+async function matchingTags(prefix) {
+  const names = new Map();
+  for (const row of await tagEntries()) for (const tag of row.tags) {
+    const key = tag.toLowerCase();
+    if (key.startsWith(prefix.toLowerCase())) names.set(key, tag);
+  }
+  return [...names.values()].sort((a,b) => a.localeCompare(b)).slice(0,12);
+}
+function partialTag(source, end) {
+  return /(?:^|[^\w\\#\[])(\[\[#|#)([\p{L}\p{N}_-]+)$/u.exec(prose(source).slice(0,end));
+}
+async function tagCompletion(context) {
+  const match = partialTag(context.state.doc.toString(), context.pos);
+  if (!match) return null;
+  try {
+    const close = match[1] === "#" ? "#" : "]]";
+    const names = await matchingTags(match[2]);
+    const suffix = context.state.doc.sliceString(context.pos,context.pos + close.length);
+    const existing = suffix.startsWith(close) ? close.length : (close === "]]" && suffix.startsWith("]") ? 1 : 0);
+    return {from:context.pos - match[2].length,to:context.pos + existing,
+      options:names.map(label => ({label,apply:label + close}))};
+  } catch { return null; }
+}
+
 function fallbackPictures(text) {
   $("#fallbackPictures").replaceChildren(...Array.from(text.matchAll(picturePattern),
-    match => pictureButton(match[1])));
+    match => pictureButton(match[1])), ...inlineTokens(text).map(tokenElement));
 }
 
 async function openPicture(id) {
@@ -87,13 +215,15 @@ async function scaledPicture(file) {
   } finally { URL.revokeObjectURL(url); }
 }
 
-async function insertPicture(file, pos) {
+async function insertPicture(file, pos, captured) {
   const noteId = state.note?.id;
   if (!file || !noteId || $("#pictureUpload").open) return;
   const field = $("#editorFallback");
   const view = state.editor;
   const from = pos ?? view?.state.selection.main.from ?? field.selectionStart;
   const to = pos ?? view?.state.selection.main.to ?? field.selectionEnd;
+  const target = captured || snapshot(from,to);
+  if (target.id !== noteId || target.source !== editorText()) { toast("The note changed. Try again."); return; }
   $("#pictureUpload").showModal();
   try {
     const blob = await scaledPicture(file);
@@ -102,11 +232,7 @@ async function insertPicture(file, pos) {
     });
     if (noteId !== state.note?.id) return;
     const insert = "![Picture](picture:" + result.id + ")";
-    if (view) view.dispatch({changes: {from, to, insert}, selection: {anchor: from + insert.length}});
-    else {
-      field.setRangeText(insert, from, to, "end");
-      field.dispatchEvent(new Event("input"));
-    }
+    replaceCaptured(target, insert);
   } catch (error) { toast(error.message); }
   finally {
     $("#pictureUpload").close();
@@ -117,7 +243,9 @@ $("#pictureUpload").oncancel = event => event.preventDefault();
 $("#pictureFile").onchange = event => {
   const file = event.target.files[0];
   event.target.value = "";
-  insertPicture(file);
+  const captured = pictureTarget;
+  pictureTarget = null;
+  insertPicture(file, undefined, captured);
 };
 const editArea = $(".editor-wrap");
 editArea.addEventListener("paste", event => {
@@ -174,6 +302,14 @@ function markdownEditingDecorations(view) {
       const to = line.from + match.index + match[0].length - 4;
       addFormattedRange(line, match.index, match.index + match[0].length, 3, 4);
       decorations.push(Decoration.mark({class: "cm-markdown-underline"}).range(from, to));
+    }
+  }
+  for (const t of inlineTokens(view.state.doc.toString())) {
+    const editing = view.hasFocus && view.state.selection.ranges.some(r => r.from < t.to && r.to > t.from);
+    if (t.type === "assignment" || editing) {
+      decorations.push(Decoration.mark({class:t.type === "external" ? "note-web-link" : "note-tag"}).range(t.from,t.to));
+    } else {
+      decorations.push(Decoration.replace({widget:new LinkWidget(t)}).range(t.from,t.to));
     }
   }
   return Decoration.set(decorations, true);
@@ -603,13 +739,22 @@ function showEditor(bookmark = null) {
   const draft = state.note.body || "";
   if (EditorView && !state.editor) {
     $("#editor").hidden = false; $("#editorFallback").hidden = true;
-    state.editor = new EditorView({ doc: draft, extensions: [basicSetup, EditorView.lineWrapping, markdown(), markdownPreview, EditorView.updateListener.of(update => { if (update.selectionSet || update.docChanged) queuePositionSave(); if (update.docChanged) onBodyChanged(update.state.doc.toString()); })], parent: $("#editor") });
+    state.editor = new EditorView({ doc: draft, extensions: [basicSetup, EditorView.lineWrapping, markdown(), markdown().language.data.of({autocomplete:tagCompletion}), markdownPreview,
+      EditorView.inputHandler.of((view, from, to, text) => {
+        if (text !== " " || from !== to) return false;
+        const source = view.state.doc.toString();
+        if (!typedTrigger(source.slice(0,from) + " " + source.slice(to), from+1)) return false;
+        view.dispatch({changes:{from,to,insert:text},selection:{anchor:from+1}});
+        runShortcut();
+        return true;
+      }), EditorView.updateListener.of(update => { if (update.selectionSet || update.docChanged) queuePositionSave(); if (update.docChanged) onBodyChanged(update.state.doc.toString()); })], parent: $("#editor") });
   } else if (EditorView) { state.editor.dispatch({ changes: { from: 0, to: state.editor.state.doc.length, insert: draft } }); }
   else {
     $("#editor").hidden = true;
     const fallback = $("#editorFallback");
     fallback.hidden = false;
     fallback.value = draft;
+    $("#fallbackTags").replaceChildren();
     fallbackPictures(draft);
     const fit = () => {
       fallback.style.height = "auto";
@@ -617,10 +762,12 @@ function showEditor(bookmark = null) {
     };
     fit();
     window.onresize = fit;
-    fallback.oninput = () => {
+    fallback.oninput = event => {
       fit();
       fallbackPictures(fallback.value);
       onBodyChanged(fallback.value);
+      if (event.inputType === "insertText" && event.data === " ") runShortcut();
+      updateFallbackTags(fallback);
     };
   }
   const clamp = value => Number.isInteger(value) ? Math.max(0, Math.min(value, draft.length)) : 0;
@@ -1009,7 +1156,7 @@ function toggleSidebar(open) { $("#sidebar").classList.toggle("open",open); $("#
 function closeSidebar() { toggleSidebar(false); }
 $("#menuButton").onclick=()=>toggleSidebar(true); $("#scrim").onclick=closeSidebar;
 function format(action) {
-  if (action === "picture") { $("#pictureFile").click(); return; }
+  if (action === "picture") { pictureTarget = null; $("#pictureFile").click(); return; }
   if (!state.editor) { const field=$("#editorFallback"); if(field.hidden)return; const from=field.selectionStart,to=field.selectionEnd,selected=field.value.slice(from,to); const wrappers={bold:["**","**"],italic:["*","*"],underline:["__","__"],strike:["~~","~~"],highlight:["==","=="],code:["`","`"]}; if(action==="undo"){document.execCommand("undo");return;}if(action==="redo"){document.execCommand("redo");return;}let lead="",tail="";if(wrappers[action]){[lead,tail]=wrappers[action];}else if(action==="heading")lead="## ";else if(action==="bullet")lead="- ";else if(action==="number")lead="1. ";else if(action==="quote")lead="> ";else if(action==="link"){lead="[";tail="](url)";}else return;const content=selected||"text";field.setRangeText(lead+content+tail,from,to,"select");field.focus();field.setSelectionRange(from+lead.length,from+lead.length+content.length);field.dispatchEvent(new Event("input"));return; }
   const view=state.editor, {from,to}=view.state.selection.main, selected=view.state.sliceDoc(from,to);
   const wrappers={bold:["**","**"],italic:["*","*"],underline:["__","__"],strike:["~~","~~"],highlight:["==","=="],code:["`","`"],quote:["> ",""]};
@@ -1146,9 +1293,13 @@ async function loadAccessMatrix() {
     const header = `<thead><tr><th>Note</th>${matrix.sessions.map(session=>`<th>${escapeHTML(session.client_name)}${session.is_ai ? " · AI" : ""}</th>`).join("")}</tr></thead>`;
     const selectAll = matrix.sessions.map(session => `<td><input type="checkbox" data-all="${session.id}" aria-label="Select all notes for ${escapeHTML(session.client_name)}"></td>`).join("");
     const defaults = matrix.sessions.map(session => `<td><input type="checkbox" data-default-session="${session.id}" aria-label="Grant ${escapeHTML(session.client_name)} access to new notes" ${session.default_note_access ? "checked" : ""}></td>`).join("");
+    const nameLabel = title => {
+      const name = escapeHTML(title);
+      return `<span class="access-name" title="${name}">${name}</span>`;
+    };
     const rows = matrix.projects.map(project => {
-      const section = `<tr class="access-project"><th colspan="${matrix.sessions.length+1}">${escapeHTML(project.title)}</th></tr>`;
-      const notes = project.notes.map(note => `<tr><th>${escapeHTML(note.title||"Untitled note")}</th>${matrix.sessions.map(session=>`<td><input type="checkbox" aria-label="Allow ${escapeHTML(session.client_name)} to access ${escapeHTML(note.title||"Untitled note")}" data-note="${note.id}" data-session="${session.id}" ${note.access[session.id]?"checked":""}></td>`).join("")}</tr>`).join("");
+      const section = `<tr class="access-project"><th scope="row">${nameLabel(project.title)}</th><td colspan="${matrix.sessions.length}"></td></tr>`;
+      const notes = project.notes.map(note => `<tr><th scope="row">${nameLabel(note.title||"Untitled note")}</th>${matrix.sessions.map(session=>`<td><input type="checkbox" aria-label="Allow ${escapeHTML(session.client_name)} to access ${escapeHTML(note.title||"Untitled note")}" data-note="${note.id}" data-session="${session.id}" ${note.access[session.id]?"checked":""}></td>`).join("")}</tr>`).join("");
       return section+notes;
     }).join("");
     host.innerHTML = `<div class="access-matrix-scroll"><table class="access-matrix-table">${header}<tbody><tr><th>Select all notes</th>${selectAll}</tr><tr><th>Default for new notes</th>${defaults}</tr>${rows}</tbody></table></div>`;
@@ -1243,3 +1394,26 @@ async function start() {
   if("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(()=>{});
 }
 start();
+
+let tagSuggestionTimer;
+function updateFallbackTags(field) {
+  const list = $("#fallbackTags");
+  list.replaceChildren();
+  clearTimeout(tagSuggestionTimer);
+  const end = field.selectionEnd;
+  const match = partialTag(field.value,end);
+  if (!match || end !== field.selectionStart) return;
+  const target = snapshot(end-match[2].length,end);
+  tagSuggestionTimer = setTimeout(async () => {
+    try {
+      const names = await matchingTags(match[2]);
+      if (target.id !== state.note?.id || field.selectionEnd !== end || target.source !== field.value) return;
+      for (const name of names) {
+        const button = document.createElement("button");
+        button.textContent = name;
+        button.onclick = () => { replaceCaptured(target,name + (match[1] === "#" ? "#" : "]]")); list.replaceChildren(); };
+        list.append(button);
+      }
+    } catch { list.replaceChildren(); }
+  },200);
+}

@@ -85,3 +85,33 @@ Added by: Codex | 11/22/2026 | 7:32 AM EST
 ## Select all notes by session
 
 The access matrix can grant or clear access to all listed notes for one session. Unchecking an individual note leaves the others selected and shows a dash in the session's Select all notes checkbox.
+
+Added by: Codex | 11/22/2026 | 1:48 PM EST
+
+## Inline tags, picture insertion and external links
+
+Type `#tag#` to assign a tag and `[[#tag]]` to link to its matching notes. Completed expressions appear in red in the rich editor. Tag links display their label and open results across the projects visible to the connection. Suggestions use the same permitted note set. Tags are derived from saved Markdown, so removing an assignment updates subsequent lookups. Code spans and fenced blocks are excluded.
+
+Type `:pic:` followed by Space to choose a picture, or `:link:` followed by Space to supply a web URL and optional label. Success replaces the command at its original position and puts the caret after the insertion. Cancellation preserves the typed command. External HTTP(S) links open in a new tab.
+
+Implemented in the working tree. Inline parser and shortcut checks, JavaScript syntax validation and 13 existing backend tests passed. Docker deployment, desktop and phone interaction, and live picture viewing still require verification. The separate picture-viewer defect remains open.
+
+Added by: Codex | 11/23/2026 | 7:33 PM EST
+
+## Renew a connection by exact name
+
+Host CLI token creation now reuses a uniquely matching connection and preserves its ID and grants. Reissuing a pending first-login token supersedes the earlier token. Browser credentials rotate when the replacement is redeemed and confirmed. AI bearer credentials rotate immediately and require fresh OAuth authorization. Unknown names prompt once. Legacy duplicate names stop issuance by name. The README documents renewal and explicit browser selection.
+
+Verified locally with 14 passing tests, including concurrent same-name issuance. Production rebuild and live verification are pending. Existing duplicate records were left for explicit cleanup.
+
+Added by: Codex | 11/23/2026 | 7:38 PM EST
+
+## Manual cleanup of stale connections
+
+The host CLI `clean devices` lists connections with at least 24 hours of inactivity, asks about each deletion and checks again before removing access. Cleanup preserves every audit entry and its displayed actor name. Verified locally with 15 passing tests. Deployment is pending.
+
+Added by: Codex | 11/23/2026 | 9:02 PM EST
+
+## Compact permission matrix names
+
+Project and note names stay at the left edge while scrolling across sessions. Long names end in an ellipsis, and hovering shows the full name.
